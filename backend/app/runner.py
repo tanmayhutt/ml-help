@@ -61,8 +61,10 @@ def _child(job_id: str, kind: str, dataset_id: str, params: dict, deadline: floa
         conn.send({"type": "done", "result": result, "model_id": model_id})
     except MemoryError:
         conn.send({"type": "error", "error": f"The job ran out of memory (limit {config.JOB_MEMORY_MB} MB). Use fewer rows or columns."})
+    except ValueError as e:
+        conn.send({"type": "error", "error": str(e)[:600]})
     except Exception as e:  # noqa: BLE001
-        conn.send({"type": "error", "error": f"{type(e).__name__}: {e}"[:600], "trace": traceback.format_exc()[-2000:]})
+        conn.send({"type": "error", "error": f"Something went wrong inside the job ({type(e).__name__}: {str(e)[:300]}).", "trace": traceback.format_exc()[-2000:]})
     finally:
         conn.close()
 

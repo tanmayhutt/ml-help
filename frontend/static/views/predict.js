@@ -10,7 +10,7 @@ export async function render(root, [id]) {
     el("p", { text: "Type one row by hand, or upload a file with the same columns." }))));
   if (!models.length) { root.append(notice("info", ["You have not trained a model on this file yet. ", el("a", { href: `#/dataset/${id}/supervised`, text: "Train one first." })])); return; }
 
-  const sel = select(models.map((m) => ({ value: m.id, label: `${m.name} (${m.task}, ${Object.entries(m.metrics || {}).slice(0, 1).map(([k, v]) => `${k} ${v}`).join("")}, ${timeAgo(m.created)})` })), models[0].id, () => refresh());
+  const sel = select(models.map((m) => ({ value: m.id, label: `${m.name} (score ${Object.values(m.metrics || {})[0] !== undefined ? Number(Object.values(m.metrics)[0]).toFixed(3) : "?"}, ${timeAgo(m.created)})` })), models[0].id, () => refresh());
   const body = el("div", { class: "stack" });
   const out = el("div");
   async function refresh() {

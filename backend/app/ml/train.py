@@ -46,21 +46,30 @@ def prepare(df: pd.DataFrame, target: str, task: str, prep_options: dict | None)
         data = data.drop_duplicates()
     X = data.drop(columns=[target])
     y = data[target]
+    if len(data) < 6:
+        raise ValueError(f"Only {len(data)} usable rows. At least 6 are needed, and 50 or more to get meaningful scores.")
     if task == "classification":
         le = LabelEncoder()
         y_enc = pd.Series(le.fit_transform(y.astype(str)), index=y.index)
         classes = [str(c) for c in le.classes_]
         counts = y.astype(str).value_counts()
+        if len(counts) < 2:
+            raise ValueError(f"'{target}' has only one value ('{counts.index[0]}'). There is nothing to predict; the answer column needs at least two different values.")
         if counts.min() < 2:
             raise ValueError(f"Class '{counts.idxmin()}' has only one row. Every class needs at least 2 rows.")
     else:
         y_enc = pd.to_numeric(y, errors="coerce")
+        if y_enc.notna().sum() == 0:
+            raise ValueError(f"'{target}' is text, not numbers. Pick 'category' instead of 'number' for this column.")
         if y_enc.isna().any():
             keep = y_enc.notna()
             X, y_enc = X[keep], y_enc[keep]
         y_enc = y_enc.astype(float)
         classes = None
-    ct, prep_info = preprocess.build(X, prep_options)
+    try:
+        ct, prep_info = preprocess.build(X, prep_options)
+    except ValueError as e:
+        raise ValueError("Every other column was dropped as an ID, a constant, or empty, so there is nothing to learn from. Add columns with real information about each row.") from e
     opts = preprocess.normalize(prep_options)
     out = {"X": X, "y": y_enc, "classes": classes, "prep": ct, "prep_info": prep_info, "balance": False, "log_target": False}
     if task == "classification":

@@ -35,6 +35,10 @@ def model_path(model_id: str) -> Path:
 def parse_upload(filename: str, raw: bytes) -> pd.DataFrame:
     """Decode CSV, TSV, or Excel content. Signature is inspected, not just the extension."""
     name = filename.lower()
+    if not raw.strip():
+        raise ValueError("The file is empty.")
+    if not (raw[:4] == b"PK\x03\x04") and b"\x00" in raw[:65536]:
+        raise ValueError("This does not look like a text table. Save it as CSV or Excel and try again.")
     if raw[:4] == b"PK\x03\x04" and (name.endswith(".xlsx") or name.endswith(".xlsm")):
         df = pd.read_excel(io.BytesIO(raw), engine="openpyxl")
     elif name.endswith((".csv", ".tsv", ".txt")):

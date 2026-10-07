@@ -26,6 +26,11 @@ def _matrix(df: pd.DataFrame, params: dict, max_rows: int):
     return X, Z, info, sub
 
 
+def _check_rows(X, minimum: int = 10) -> None:
+    if len(X) < minimum:
+        raise ValueError(f"Only {len(X)} rows. At least {minimum} are needed for this.")
+
+
 def _points2d(Z, labels=None, max_points: int = 1500) -> dict:
     n = len(Z)
     idx = np.random.RandomState(0).choice(n, min(n, max_points), replace=False) if n > max_points else np.arange(n)
@@ -46,13 +51,14 @@ def _points2d(Z, labels=None, max_points: int = 1500) -> dict:
 def cluster(df, params: dict, progress, deadline) -> dict:
     algo = params.get("algorithm") or "kmeans"
     X, Z, info, sub = _matrix(df, params, config.TRAIN_ROWS)
+    _check_rows(X)
     narration = [{"step": "Prepare", "text": f"{len(X)} rows and {Z.shape[1]} columns after preparing the data. Scaling matters here: grouping is based on distance between rows, and a column with big numbers would otherwise drown out the rest.", "code": "Z = preprocessor.fit_transform(X)"}]
     extra: dict = {}
     if algo == "kmeans":
         k = int(min(max(params.get("k", 3), 2), 20))
         progress("Sweeping k for elbow and silhouette", 0.2)
         sweep = []
-        ks = list(range(2, min(11, len(X) - 1)))
+        ks = list(range(2, max(3, min(11, len(X) - 1))))
         for kk in ks:
             km = KMeans(n_clusters=kk, n_init=4, random_state=config.RANDOM_STATE).fit(Z)
             sil = evaluate.M.silhouette_score(Z, km.labels_, sample_size=min(1500, len(Z)), random_state=0) if kk < len(Z) else None
@@ -97,6 +103,9 @@ def _label_points(p: dict) -> dict:
 def reduce(df, params: dict, progress, deadline) -> dict:
     algo = params.get("algorithm") or "pca"
     X, Z, info, sub = _matrix(df, params, config.TRAIN_ROWS if algo == "pca" else config.EMBED_ROWS)
+    _check_rows(X)
+    if Z.shape[1] < 2:
+        raise ValueError("A 2D picture needs at least two usable columns.")
     color = None
     if params.get("color_by") in df.columns:
         color = df.loc[X.index, params["color_by"]].astype(str).tolist()
@@ -135,6 +144,7 @@ def anomaly(df, params: dict, progress, deadline) -> dict:
     algo = params.get("algorithm") or "isoforest"
     contamination = float(min(max(params.get("contamination", 0.05), 0.005), 0.3))
     X, Z, info, sub = _matrix(df, params, config.TRAIN_ROWS)
+    _check_rows(X)
     if algo == "isoforest":
         model = IsolationForest(contamination=contamination, random_state=config.RANDOM_STATE, n_jobs=1).fit(Z)
         score = -model.score_samples(Z)

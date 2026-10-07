@@ -82,7 +82,9 @@ async def upload(request: Request, file: UploadFile = File(...)) -> dict:
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(400, f"Could not parse the file: {type(e).__name__}")
+        raise HTTPException(400, "Could not read the file as a table. Check that it is a CSV or Excel file with a header row.")
+    if df.shape[1] == 1 and df.shape[0] > 1 and df.iloc[:, 0].astype(str).str.len().median() > 200:
+        raise HTTPException(400, "The file came out as a single very wide column. Check the separator (comma, tab, or semicolon).")
     storage.cleanup()
     return _register(df, file.filename or "upload.csv", sample=False)
 
@@ -123,9 +125,14 @@ def get_dataset(dataset_id: str) -> dict:
 def delete_dataset(dataset_id: str) -> dict:
     with db.connect() as con:
         _dataset_row(con, dataset_id)
+        models = [r["id"] for r in con.execute("SELECT id FROM models WHERE dataset_id = ?", (dataset_id,)).fetchall()]
+        con.execute("DELETE FROM models WHERE dataset_id = ?", (dataset_id,))
+        con.execute("DELETE FROM jobs WHERE dataset_id = ?", (dataset_id,))
         con.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
     storage.delete_dataset_files(dataset_id)
-    return {"ok": True}
+    for mid in models:
+        storage.model_path(mid).unlink(missing_ok=True)
+    return {"ok": True, "models_removed": len(models)}
 
 
 class TaskQuery(BaseModel):
@@ -252,16 +259,27 @@ def predict(model_id: str, body: PredictIn) -> dict:
         raise HTTPException(410, "Model file expired.")
     pipe = joblib.load(path)
     feats = m["features"]["features"]
+    with db.connect() as con:
+        ds = db.row_to_dict(con.execute("SELECT profile FROM datasets WHERE id = ?", (m["dataset_id"],)).fetchone(), ("profile",))
+    types = {c["name"]: c["type"] for c in ((ds or {}).get("profile") or {}).get("columns", [])}
     df = pd.DataFrame(body.rows)
     for f in feats:
         if f not in df.columns:
             df[f] = None
     df = df[feats]
+    bad = []
     for c in df.columns:
-        if df[c].dtype == object:
+        if types.get(c) == "numeric":
             converted = pd.to_numeric(df[c], errors="coerce")
-            if converted.notna().sum() == df[c].notna().sum():
+            if (converted.isna() & df[c].notna()).any():
+                bad.append(c)
+            df[c] = converted
+        elif df[c].dtype == object:
+            converted = pd.to_numeric(df[c], errors="coerce")
+            if converted.notna().sum() == df[c].notna().sum() and df[c].notna().any():
                 df[c] = converted
+    if bad:
+        raise HTTPException(400, f"These need a number: {', '.join(bad)}.")
     try:
         pred = pipe.predict(df)
     except Exception as e:  # noqa: BLE001

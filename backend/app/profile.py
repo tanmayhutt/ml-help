@@ -43,7 +43,7 @@ def profile(df: pd.DataFrame) -> dict:
                 out_vals = v[(v < lo) | (v > hi)]
                 info["box"] = {"min": _f(max(v.min(), lo)), "q1": _f(q1), "median": _f(v.median()), "q3": _f(q3), "max": _f(min(v.max(), hi)),
                                "outliers": [_f(x) for x in out_vals.sample(min(len(out_vals), 40), random_state=0)], "n_outliers": int(len(out_vals))}
-                if len(v) > 10 and v.min() >= 0 and abs(float(v.skew())) >= 1.0:
+                if len(v) > 10 and nunique > 10 and v.min() >= 0 and abs(float(v.skew())) >= 1.0:
                     info["skewed"] = True
             if nunique <= 10 and n > 50:
                 info["looks_categorical"] = True

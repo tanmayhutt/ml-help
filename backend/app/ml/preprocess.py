@@ -213,7 +213,7 @@ def split_columns(X: pd.DataFrame, options: dict) -> dict:
     if options.get("log_skewed"):
         for c in numeric:
             v = pd.to_numeric(X[c], errors="coerce").dropna().astype(float)
-            if len(v) > 10 and v.min() >= 0 and abs(float(v.skew())) >= options.get("skew_threshold", 1.0):
+            if len(v) > 10 and v.nunique() > 10 and v.min() >= 0 and abs(float(v.skew())) >= options.get("skew_threshold", 1.0):
                 log_cols.append(c)
     numeric = [c for c in numeric if c not in log_cols]
     return {"numeric": numeric, "numeric_log": log_cols, "categorical": categorical, "ordered": ordered, "dates": dates, "dropped": dropped}
