@@ -47,4 +47,6 @@ if STATIC.exists():
 
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str):
+        if path.startswith("api/") or path.startswith("static/"):
+            return JSONResponse({"detail": "Not found"}, status_code=404)
         return FileResponse(STATIC / "index.html")
