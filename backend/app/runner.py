@@ -159,9 +159,10 @@ class Runner:
                 con.execute(
                     "INSERT INTO models (id, job_id, dataset_id, name, task, target, features, metrics, created) VALUES (?,?,?,?,?,?,?,?,?)",
                     (outcome["model_id"], job_id, row["dataset_id"], (result.get("final") or result).get("model_name", "model"), result.get("task", ""), result.get("target"),
-                     json.dumps({"features": (result.get("final") or result).get("features", []), "classes": (result.get("final") or result).get("classes"), "prep_options": result.get("preprocessing", {}).get("options", {}),
+                     json.dumps({"features": (result.get("final") or result).get("features", []), "classes": (result.get("final") or result).get("classes"), "prep_options": (result.get("preprocessing") or {}).get("options", {}),
                                  "numeric": result.get("preprocessing", {}).get("columns", {}).get("numeric", []), "categorical": result.get("preprocessing", {}).get("columns", {}).get("categorical", []),
-                                 "spec": (result.get("best") or {}).get("spec") or params.get("spec") or {"kind": "single", "model": params.get("model")}, "test_size": (result.get("final") or result).get("test_size")}),
+                                 "spec": (result.get("best") or {}).get("spec") or params.get("spec") or {"kind": "single", "model": params.get("model")}, "test_size": (result.get("final") or result).get("test_size"),
+                                 "threshold": result.get("threshold"), "balance": result.get("balance"), "log_target": result.get("log_target")}),
                      json.dumps((result.get("final") or result).get("evaluation", {}).get("metrics", {})), db.now()),
                 )
 

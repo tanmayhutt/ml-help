@@ -11,12 +11,13 @@ ML Help walks you through machine learning in numbered steps. Every result comes
 **Understand and clean your data**
 
 - Overview, every column with histogram and box plot, category bars, missing-values chart, correlation heatmap, the most related pairs, duplicate count.
-- A generated cleaning plan: which columns to drop and why, duplicates, how to fill blanks, outlier capping, log transform for long tails, encoding per column, scaling. Each step has the reason and pandas code, and one button applies the plan to the prediction flow.
+- A generated cleaning plan: which columns to drop and why, duplicates, how to fill blanks, outlier capping, log transform for long tails, dates turned into year/month/weekday/days, rare categories grouped, ordered words like low/medium/high encoded in order, near-duplicate columns dropped, encoding per column, scaling. Each step has the reason and pandas code, and one button applies the plan to the prediction flow.
 - The seaborn and matplotlib code for every chart.
 
 **Predict a column**
 
-- One button finds the best model: 13 classifiers or 13 regressors are cross-validated on the same folds, the top three are combined by voting and stacking, the overall winner is trained on a hold-out split, and a plain-language verdict explains the choice.
+- One button finds the best model: 13 classifiers or 13 regressors are cross-validated on the same folds, the top three are combined by voting and stacking, and the overall winner is trained on a hold-out split with a plain-language verdict.
+- Refinements are tested on the winner and kept only when they help, each shown with before and after scores: dropping columns the model ignores, tuning its settings, balancing a rare class, moving the decision threshold, and predicting log(value) for long-tailed number targets.
 - Trains one model with full metrics and charts: confusion matrix, ROC curve, predicted vs actual, error histogram, feature importance.
 - Combines models: voting, stacking, and bagging ensembles built from any members you pick.
 - Fine-tunes a model with random search over its hyperparameters.

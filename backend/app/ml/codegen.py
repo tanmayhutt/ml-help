@@ -9,6 +9,24 @@ from . import catalog
 SCALER = {"standard": "StandardScaler()", "minmax": "MinMaxScaler()", "robust": "RobustScaler()", "none": None}
 
 
+DATE_EXPANDER = """
+class DateExpander(BaseEstimator, TransformerMixin):
+    # Date text -> year, month, weekday, day of year, days since the earliest training date.
+    def __init__(self, columns=()):
+        self.columns = columns
+    def fit(self, X, y=None):
+        self.origin_ = {c: pd.to_datetime(X[c], errors='coerce', format='mixed').min() for c in self.columns}
+        return self
+    def transform(self, X):
+        X = X.copy()
+        for c in self.columns:
+            d = pd.to_datetime(X[c], errors='coerce', format='mixed')
+            X[c + '_year'], X[c + '_month'], X[c + '_weekday'], X[c + '_dayofyear'] = d.dt.year, d.dt.month, d.dt.weekday, d.dt.dayofyear
+            X[c + '_days'] = (d - self.origin_[c]).dt.days
+            X = X.drop(columns=[c])
+        return X
+"""
+
 WINSORIZER = """
 class Winsorizer(BaseEstimator, TransformerMixin):
     # Cap values outside [Q1 - k*IQR, Q3 + k*IQR]. Limits are learned on training rows only.
@@ -28,7 +46,8 @@ def _prep_block(prep_info: dict) -> str:
     o = prep_info.get("options", {})
     cols = prep_info.get("columns", {})
     scaler = SCALER.get(o.get("scaler", "standard"))
-    enc = "OneHotEncoder(handle_unknown='ignore', sparse_output=False)" if o.get("encoder", "onehot") == "onehot" else "OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)"
+    rare = int(o.get("rare_min") or 0)
+    enc = (f"OneHotEncoder(handle_unknown='infrequent_if_exist', min_frequency={rare}, sparse_output=False)" if rare > 1 else "OneHotEncoder(handle_unknown='ignore', sparse_output=False)") if o.get("encoder", "onehot") == "onehot" else "OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)"
     cap = o.get("outliers") == "cap"
     base = f"('impute', SimpleImputer(strategy='{o.get('num_impute', 'median')}'))" + (", ('cap', Winsorizer())" if cap else "")
     num = "[" + base + (f", ('scale', {scaler})" if scaler else "") + "]"
@@ -42,12 +61,21 @@ def _prep_block(prep_info: dict) -> str:
         lines.append("df = df.drop_duplicates()")
     if cap:
         lines.append(WINSORIZER)
+    if cols.get("dates"):
+        lines.append(DATE_EXPANDER)
+    dropped_corr = [d["column"] for d in cols.get("dropped", []) if "nearly identical" in d.get("reason", "")]
+    if dropped_corr:
+        lines.append(f"# Dropped as near-duplicates of other columns (correlation above {o.get('drop_correlated', 0.95)}): {dropped_corr!r}")
     lines += [
         f"numeric = {cols.get('numeric', [])!r}",
         f"categorical = {cols.get('categorical', [])!r}",
     ]
     if cols.get("numeric_log"):
         lines.append(f"numeric_log = {cols.get('numeric_log')!r}  # skewed columns get log(1 + x)")
+    if cols.get("ordered"):
+        lines.append(f"ordered = {cols.get('ordered')!r}  # categories with a natural order")
+    if cols.get("dates"):
+        lines.append(f"dates = {cols.get('dates')!r}")
     dropped = [d["column"] for d in cols.get("dropped", [])]
     if dropped:
         lines.append(f"# Dropped automatically: {dropped!r}")
@@ -57,10 +85,16 @@ def _prep_block(prep_info: dict) -> str:
     ]
     if cols.get("numeric_log"):
         lines.append(f"    ('num_log', Pipeline({num_log}), numeric_log),")
-    lines += [
-        f"    ('cat', Pipeline([('impute', SimpleImputer(strategy='{o.get('cat_impute', 'most_frequent')}', fill_value='missing')), ('encode', {enc})]), categorical),",
-        "], remainder='drop')",
-    ]
+    lines.append(f"    ('cat', Pipeline([('impute', SimpleImputer(strategy='{o.get('cat_impute', 'most_frequent')}', fill_value='missing')), ('encode', {enc})]), categorical),")
+    if cols.get("ordered"):
+        lines.append("    ('ord', Pipeline([('impute', SimpleImputer(strategy='most_frequent')), ('encode', OrdinalEncoder(categories=[ordered[c] for c in ordered])), ('scale', StandardScaler())]), list(ordered)),")
+    for c in cols.get("dates", []):
+        lines.append(f"    ('date_{c}', Pipeline([('impute', SimpleImputer(strategy='median')), ('scale', StandardScaler())]), [f'{c}_{{p}}' for p in ('year', 'month', 'weekday', 'dayofyear', 'days')]),")
+    lines.append("], remainder='drop')")
+    if cols.get("dates"):
+        lines.append("preprocessor = Pipeline([('dates', DateExpander(dates)), ('columns', preprocessor)])")
+    if cols.get("ordered"):
+        lines.append("for c in ordered:\n    X[c] = X[c].astype(str).str.strip().str.lower()")
     return "\n".join(lines)
 
 
@@ -74,7 +108,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, On
 """
 
 
-def estimator_code(task: str, spec: dict) -> tuple[str, str]:
+def estimator_code(task: str, spec: dict, balance: bool = False, log_target: bool = False) -> tuple[str, str]:
     """Return (constructor expression, import lines) for a single model or an ensemble spec."""
     reg = catalog.registry(task)
 
@@ -87,8 +121,19 @@ def estimator_code(task: str, spec: dict) -> tuple[str, str]:
         for k, v in (params or {}).items():
             if k in defaults and v not in (None, ""):
                 shown[k] = v
+        if balance and key in catalog.BALANCEABLE and "class_weight" in defaults:
+            shown["class_weight"] = "balanced"
         args = ", ".join(f"{k}={v!r}" for k, v in shown.items())
         return f"{cls.__name__}({args})", f"from {cls.__module__.split('._')[0]} import {cls.__name__}\n"
+
+    code, imports = _estimator_inner(task, spec, reg, one)
+    if log_target and task == "regression":
+        code = f"TransformedTargetRegressor(regressor={code}, func=np.log1p, inverse_func=np.expm1)"
+        imports += "from sklearn.compose import TransformedTargetRegressor\n"
+    return code, imports
+
+
+def _estimator_inner(task: str, spec: dict, reg: dict, one) -> tuple[str, str]:
 
     kind = spec.get("kind", "single")
     if kind == "single":
@@ -126,17 +171,24 @@ def script(kind: str, params: dict, result: dict) -> str:
     target = params.get("target")
     prep_info = result.get("preprocessing", {})
     drop = prep_info.get("options", {}).get("drop_columns", []) or []
+    balance = bool(result.get("balance"))
+    log_target = bool(result.get("log_target"))
     head = _head(target, drop)
     prep = _prep_block(prep_info)
     if kind == "auto":
         race = script("leaderboard", params, result)
         best = result.get("best", {})
-        est, imports = estimator_code(task, best.get("spec") or {"kind": "single", "model": "rf"})
+        est, imports = estimator_code(task, best.get("spec") or {"kind": "single", "model": "rf"}, balance, log_target)
         strat = ", stratify=y" if task == "classification" else ""
         top = [r for r in result.get("leaderboard", []) if r.get("status") == "ok" and r.get("family") != "ensemble"][:3]
-        vcode, vimp = estimator_code(task, {"kind": "voting", "members": [r["key"] for r in top], "voting": "soft"})
-        scode, simp = estimator_code(task, {"kind": "stacking", "members": [r["key"] for r in top]})
+        vcode, vimp = estimator_code(task, {"kind": "voting", "members": [r["key"] for r in top], "voting": "soft"}, balance, log_target)
+        scode, simp = estimator_code(task, {"kind": "stacking", "members": [r["key"] for r in top]}, balance, log_target)
+        refine = "".join(f"# - {r['step']}: {'applied' if r.get('applied') else 'not applied'}" + (f" ({r['before']} -> {r['after']})" if r.get('before') is not None and r.get('after') is not None else "") + "\n" for r in result.get("refinements", []))
+        thr = result.get("threshold")
+        thr_code = f"\n# Decision threshold chosen for the rare class:\nproba = pipe.predict_proba(X_test)[:, 1]\npred = (proba >= {thr}).astype(int)\n" if thr else ""
         return race + f"""
+# --- Refinements that were tested on the winner ------------------------------
+{refine}
 # --- Ensembles of the top three models -------------------------------------
 {"".join(dict.fromkeys((vimp + simp + imports).splitlines(True)))}
 ensembles = {{
@@ -154,15 +206,15 @@ model = {est}
 pipe = Pipeline([('prep', preprocessor), ('model', model)])
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42{strat})
 pipe.fit(X_train, y_train)
-print('score on unseen rows:', pipe.score(X_test, y_test))
+print('score on unseen rows:', pipe.score(X_test, y_test)){thr_code}
 import joblib
 joblib.dump(pipe, 'best_model.joblib')
 """
     if kind == "leaderboard":
         reg = catalog.registry(task)
         keys = [r["key"] for r in result.get("leaderboard", []) if r.get("status") == "ok" and r["key"] in reg]
-        imports = "".join(dict.fromkeys(estimator_code(task, {"kind": "single", "model": k})[1] for k in keys))
-        shelf = ",\n".join(f"    '{reg[k]['name']}': {estimator_code(task, {'kind': 'single', 'model': k})[0]}" for k in keys)
+        imports = "".join(dict.fromkeys(estimator_code(task, {"kind": "single", "model": k}, balance, log_target)[1] for k in keys))
+        shelf = ",\n".join(f"    '{reg[k]['name']}': {estimator_code(task, {'kind': 'single', 'model': k}, balance, log_target)[0]}" for k in keys)
         cv = "StratifiedKFold" if task == "classification" else "KFold"
         return f"""{IMPORTS}from sklearn.model_selection import cross_val_score, {cv}
 {imports}
@@ -188,7 +240,7 @@ print('winner:', best)
 """
     if kind == "train":
         spec = params.get("spec") or {"kind": "single", "model": params.get("model")}
-        est, imports = estimator_code(task, spec)
+        est, imports = estimator_code(task, spec, balance, log_target)
         strat = ", stratify=y" if task == "classification" else ""
         if task == "classification":
             metrics = """from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
@@ -225,7 +277,7 @@ import joblib
 joblib.dump(pipe, 'model.joblib')
 """
     if kind == "tune":
-        est, imports = estimator_code(task, {"kind": "single", "model": params.get("model")})
+        est, imports = estimator_code(task, {"kind": "single", "model": params.get("model")}, balance, log_target)
         space = _space_literal(task, params.get("model"))
         cv = "StratifiedKFold" if task == "classification" else "KFold"
         return f"""{IMPORTS}from sklearn.model_selection import RandomizedSearchCV, {cv}
@@ -249,7 +301,7 @@ print('best params:', search.best_params_)
 """
     if kind == "curve":
         spec = params.get("spec") or {"kind": "single", "model": params.get("model")}
-        est, imports = estimator_code(task, spec)
+        est, imports = estimator_code(task, spec, balance, log_target)
         return f"""{IMPORTS}from sklearn.model_selection import learning_curve
 {imports}
 {head}

@@ -42,7 +42,7 @@ function answer(res, m) {
     const probs = res.probabilities[0];
     wrap.append(el("div", { class: "prob-list" }, res.classes.map((c, i) => el("div", { class: "prob-row" + (String(c) === String(pred) ? " on" : "") },
       el("span", { class: "prob-name", text: c }), el("div", { class: "prob-track" }, el("div", { class: "prob-bar", style: { width: `${Math.round(probs[i] * 100)}%` } })), el("span", { class: "prob-pct", text: `${(probs[i] * 100).toFixed(1)}%` })))));
-    wrap.append(el("p", { class: "muted small", text: "The bars are how confident the model is in each answer. Confidence near 50/50 means the model is unsure for this row." }));
+    wrap.append(el("p", { class: "muted small", text: res.threshold ? `The bars are how confident the model is in each answer. Because '${res.classes[1]}' is the rare class, it is called whenever its confidence is at least ${Math.round(res.threshold * 100)}%, not 50%.` : "The bars are how confident the model is in each answer. Confidence near 50/50 means the model is unsure for this row." }));
   }
   return wrap;
 }

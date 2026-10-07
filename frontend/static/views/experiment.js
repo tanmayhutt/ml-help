@@ -12,7 +12,7 @@ export async function render(root, [id], signal) {
   let planOpts = null;
   try { const raw = sessionStorage.getItem(`mlhelp.plan.${id}`); if (raw) { planOpts = JSON.parse(raw); sessionStorage.removeItem(`mlhelp.plan.${id}`); } } catch {}
   const recommended = planOpts || ds.profile.cleaning?.options || {};
-  const S = state[id] = state[id] || { target: null, task: null, prep: { num_impute: "median", cat_impute: "most_frequent", scaler: "standard", encoder: "onehot", drop_columns: [], drop_duplicates: false, outliers: "none", log_skewed: false, ...recommended }, lastRace: null };
+  const S = state[id] = state[id] || { target: null, task: null, prep: { num_impute: "median", cat_impute: "most_frequent", scaler: "standard", encoder: "onehot", drop_columns: [], drop_duplicates: false, outliers: "none", log_skewed: false, expand_dates: true, rare_min: 5, ordered_auto: true, drop_correlated: 0.95, balance: "auto", log_target: "auto", ...recommended }, refine: { feature_select: true, tune_winner: true }, lastRace: null };
   if (planOpts) { S.prep = { ...S.prep, ...planOpts }; S.planApplied = true; }
   const cols = ds.profile.columns;
 
@@ -54,19 +54,27 @@ export async function render(root, [id], signal) {
       field("Text columns", select([{ value: "onehot", label: "one column per value (recommended)" }, { value: "ordinal", label: "replace with numbers" }], S.prep.encoder, (v) => (S.prep.encoder = v))),
       field("Duplicate rows", select([{ value: "1", label: "remove them" }, { value: "0", label: "keep them" }], S.prep.drop_duplicates ? "1" : "0", (v) => (S.prep.drop_duplicates = v === "1"))),
       field("Outliers", select([{ value: "cap", label: "cap extreme values" }, { value: "none", label: "leave as is" }], S.prep.outliers, (v) => (S.prep.outliers = v)), "Pulls values beyond 1.5 times the middle range back to the edge."),
-      field("Long-tailed columns", select([{ value: "1", label: "log-transform them" }, { value: "0", label: "leave as is" }], S.prep.log_skewed ? "1" : "0", (v) => (S.prep.log_skewed = v === "1")), "Squashes a long tail of big values."));
+      field("Long-tailed columns", select([{ value: "1", label: "log-transform them" }, { value: "0", label: "leave as is" }], S.prep.log_skewed ? "1" : "0", (v) => (S.prep.log_skewed = v === "1")), "Squashes a long tail of big values."),
+      field("Date columns", select([{ value: "1", label: "turn into year, month, weekday, days" }, { value: "0", label: "leave out" }], S.prep.expand_dates ? "1" : "0", (v) => (S.prep.expand_dates = v === "1"))),
+      field("Rare categories", select([{ value: "5", label: "group values seen under 5 times" }, { value: "10", label: "group values seen under 10 times" }, { value: "0", label: "keep every value" }], String(S.prep.rare_min), (v) => (S.prep.rare_min = Number(v)))),
+      field("Ordered words (low, medium, high)", select([{ value: "1", label: "encode in order" }, { value: "0", label: "treat as plain categories" }], S.prep.ordered_auto ? "1" : "0", (v) => (S.prep.ordered_auto = v === "1"))),
+      field("Near-duplicate number columns", select([{ value: "0.95", label: "drop one of each pair (above 0.95)" }, { value: "0.99", label: "only above 0.99" }, { value: "0", label: "keep all" }], String(S.prep.drop_correlated), (v) => (S.prep.drop_correlated = Number(v)))),
+      S.task === "classification" ? field("Rare class", select([{ value: "auto", label: "weigh it more when under 35% (recommended)" }, { value: "on", label: "always weigh it more" }, { value: "off", label: "never" }], S.prep.balance, (v) => (S.prep.balance = v)), "Stops models from scoring well by always guessing the common class.") : null,
+      S.task === "regression" ? field("Long-tailed answer column", select([{ value: "auto", label: "predict log(value) when skewed (recommended)" }, { value: "on", label: "always" }, { value: "off", label: "never" }], S.prep.log_target, (v) => (S.prep.log_target = v))) : null,
+      field("Drop columns the winner ignores", select([{ value: "1", label: "test it, keep if the score holds" }, { value: "0", label: "skip" }], S.refine.feature_select ? "1" : "0", (v) => (S.refine.feature_select = v === "1"))),
+      field("Tune the winner's settings", select([{ value: "1", label: "try 8 settings (recommended)" }, { value: "0", label: "skip" }], S.refine.tune_winner ? "1" : "0", (v) => (S.refine.tune_winner = v === "1"))));
     const dropChips = el("div", { class: "chips" }, cols.filter((c) => c.name !== S.target).map((c) => chip(c.name, S.prep.drop_columns.includes(c.name), (on) => { S.prep.drop_columns = on ? [...new Set([...S.prep.drop_columns, c.name])] : S.prep.drop_columns.filter((x) => x !== c.name); })));
     const host = el("div");
     const run = button("Find the best model", { kind: "primary big", icon: "play", onclick: async () => {
       run.disabled = true;
-      try { const job = await runJob("auto", id, baseParams(), host, signal); S.lastRace = job.result; showResult(autoResult(job.result)); }
+      try { const job = await runJob("auto", id, { ...baseParams(), ...S.refine }, host, signal); S.lastRace = job.result; showResult(autoResult(job.result)); }
       catch {} finally { run.disabled = false; }
     } });
     const planNote = S.planApplied ? notice("ok", "The cleaning plan from the data page is applied: " + planSummary(S.prep) + ".") : (Object.keys(recommended).length ? notice("info", "Recommended cleaning is applied automatically: " + planSummary(S.prep) + ". Change it below if you want.") : null);
     s2.append(step(4, "Find the best model", [
-      el("p", { class: "plain", text: "One click. Every model on the shelf is tested on your data, the best ones are combined, and you get a clear winner with charts, a saved model, and the code." }),
+      el("p", { class: "plain", text: "One click. The data is cleaned and encoded, every model on the shelf is tested, the best ones are combined, the winner is refined, and you get a clear answer with charts, a saved model, and the code." }),
       planNote, run, host,
-      details("Change how the data is prepared (optional)", [el("p", { class: "muted small", text: "Blanks get filled, numbers get scaled, and text gets turned into numbers. The defaults work for most files." }), opts]),
+      details("Change how the data is prepared and refined (optional)", [el("p", { class: "muted small", text: "Blanks get filled, numbers get scaled, and text gets turned into numbers. The defaults work for most files." }), opts]),
       details("Leave some columns out (for example IDs or names)", dropChips),
     ]));
     s2.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -196,6 +204,11 @@ export async function render(root, [id], signal) {
       el("p", { class: "big-answer", text: `Best model: ${r.best.name}` }),
       el("p", { class: "plain", text: `${METRIC_NAMES[r.scoring] || r.scoring} ${score(r.best.mean)} in cross-validation, ${score(ev.metrics[ev.primary])} on rows it never saw.` }),
       el("ul", { class: "verdict" }, r.verdict.map((t) => el("li", { text: t }))),
+      (r.refinements || []).length ? el("div", { class: "refine" }, el("h4", { text: "Refinements tested on the winner" }), r.refinements.map((f) => el("div", { class: "refine-row " + (f.applied ? "on" : "") },
+        el("span", { class: "badge " + (f.applied ? "ok" : ""), text: f.applied ? "applied" : "not needed" }),
+        el("div", {}, el("strong", { text: f.step }), f.before !== undefined && f.before !== null && f.after !== undefined && f.after !== null ? el("span", { class: "muted small", text: `  ${score(f.before)} to ${score(f.after)}` }) : null, el("p", { class: "small", text: f.text }), f.code ? codeBlock(f.code) : null)))) : null,
+      r.balance ? notice("info", "A rare class was detected, so models that support it weigh it more. Balanced accuracy is the fairer number to watch.") : null,
+      r.log_target ? notice("info", "The answer column has a long tail, so models predict log(value) and convert back.") : null,
       r.subsampled ? notice("info", `To stay fast, the comparison used ${r.rows_used.toLocaleString()} of your ${r.rows_total.toLocaleString()} rows.`) : null,
       el("h4", { text: `All ${ok.length} models, best first (green bars are combined models)` }),
       barChart(items, { title: "Ranking" }),
@@ -334,7 +347,11 @@ function planSummary(prep) {
   bits.push(`fill blanks (${prep.num_impute === "median" ? "median" : prep.num_impute.replace("_", " ")})`);
   if (prep.outliers === "cap") bits.push("cap outliers");
   if (prep.log_skewed) bits.push("log-transform long tails");
-  bits.push(prep.encoder === "onehot" ? "one-hot encode text" : "number-code text");
+  if (prep.expand_dates) bits.push("turn dates into numbers");
+  bits.push(prep.encoder === "onehot" ? (prep.rare_min > 1 ? "one-hot encode text, grouping rare values" : "one-hot encode text") : "number-code text");
+  if (prep.ordered_auto) bits.push("keep the order of words like low/medium/high");
+  if (prep.drop_correlated) bits.push("drop near-duplicate columns");
+  if (prep.balance !== "off") bits.push("weigh a rare class more");
   if (prep.scaler !== "none") bits.push("scale numbers");
   return bits.join(", ");
 }

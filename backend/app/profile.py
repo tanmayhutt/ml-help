@@ -213,14 +213,15 @@ def cleaning_plan(df: pd.DataFrame, cols: list[dict], duplicates: int, corr: dic
     """Recommended cleaning steps with reasons and pandas code, plus the preprocessing options that apply them."""
     steps = []
     drop = []
-    options = {"num_impute": "median", "cat_impute": "most_frequent", "scaler": "standard", "encoder": "onehot", "drop_columns": [], "drop_duplicates": False, "outliers": "none", "log_skewed": False}
+    options = {"num_impute": "median", "cat_impute": "most_frequent", "scaler": "standard", "encoder": "onehot", "drop_columns": [], "drop_duplicates": False, "outliers": "none", "log_skewed": False,
+               "expand_dates": True, "rare_min": 5, "ordered_auto": True, "drop_correlated": 0.95, "balance": "auto", "log_target": "auto"}
     for c in cols:
         if c["name"] == target:
             continue
         if c.get("looks_id"):
             drop.append(c["name"]); steps.append({"step": f"Drop '{c['name']}'", "why": "Every value is different, so it is an ID or an index. It cannot help predict anything and a tree would just memorise it.", "code": f"df = df.drop(columns=['{c['name']}'])"})
         elif c["type"] == "datetime":
-            drop.append(c["name"]); steps.append({"step": f"Drop or expand '{c['name']}'", "why": "Dates cannot be used as-is. Either drop the column, or turn it into useful numbers like year, month, weekday, or days since a reference date.", "code": f"df['{c['name']}'] = pd.to_datetime(df['{c['name']}'])\ndf['{c['name']}_year'] = df['{c['name']}'].dt.year\ndf['{c['name']}_month'] = df['{c['name']}'].dt.month\ndf['{c['name']}_weekday'] = df['{c['name']}'].dt.weekday\ndf = df.drop(columns=['{c['name']}'])"})
+            steps.append({"step": f"Turn '{c['name']}' into numbers", "why": "A date as text means nothing to a model. It becomes year, month, weekday, day of year, and days since the first date, so trends and seasonality can be learned.", "code": f"df['{c['name']}'] = pd.to_datetime(df['{c['name']}'])\ndf['{c['name']}_year'] = df['{c['name']}'].dt.year\ndf['{c['name']}_month'] = df['{c['name']}'].dt.month\ndf['{c['name']}_weekday'] = df['{c['name']}'].dt.weekday\ndf['{c['name']}_days'] = (df['{c['name']}'] - df['{c['name']}'].min()).dt.days\ndf = df.drop(columns=['{c['name']}'])"})
         elif c["missing_pct"] > 40:
             drop.append(c["name"]); steps.append({"step": f"Drop '{c['name']}'", "why": f"{c['missing_pct']}% of it is blank. Filling that many blanks would invent most of the column.", "code": f"df = df.drop(columns=['{c['name']}'])"})
         elif c["unique"] <= 1:
@@ -249,11 +250,19 @@ def cleaning_plan(df: pd.DataFrame, cols: list[dict], duplicates: int, corr: dic
     medium = [c["name"] for c in cats if 10 < c["unique"] <= 50]
     if small:
         steps.append({"step": "One-hot encode " + ", ".join(small[:6]) + (" and more" if len(small) > 6 else ""), "why": "Each category becomes its own 0/1 column. The model never assumes an order between categories like red < green < blue.", "code": f"df = pd.get_dummies(df, columns={small!r}, drop_first=False)"})
+    rare_cols = [c["name"] for c in cats if c.get("top") and any(t["count"] < 5 for t in c["top"]) ]
+    if small or medium:
+        steps.append({"step": "Group rare categories as 'other'", "why": "A category that appears only a handful of times cannot be learned from and just adds noise columns. Values seen fewer than 5 times are merged into one 'infrequent' group.", "code": "OneHotEncoder(handle_unknown='infrequent_if_exist', min_frequency=5)"})
     if medium:
         steps.append({"step": "Encode " + ", ".join(medium) + " with care", "why": "Between 10 and 50 categories: one-hot still works but creates many columns. For tree models an ordinal code is fine; for linear models prefer one-hot or group rare categories first.", "code": f"from sklearn.preprocessing import OrdinalEncoder\nenc = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)\ndf[{medium!r}] = enc.fit_transform(df[{medium!r}])"})
-    ordered = [c["name"] for c in cats if any(w in c["name"].lower() for w in ("size", "level", "grade", "rating", "rank", "tier", "class"))]
+    from .ml.preprocess import ordered_categories
+    ordered = {c["name"]: ordered_categories([t["value"] for t in c.get("top", [])]) for c in cats}
+    ordered = {k: v for k, v in ordered.items() if v}
     if ordered:
-        steps.append({"step": "Check whether " + ", ".join(ordered) + " has a natural order", "why": "Words like small/medium/large or low/high have an order. If so, map them to numbers by hand instead of one-hot encoding, so the model can use the order.", "code": f"order = {{'low': 0, 'medium': 1, 'high': 2}}  # edit to match your values\ndf['{ordered[0]}'] = df['{ordered[0]}'].map(order)"})
+        steps.append({"step": "Encode ordered categories in order: " + ", ".join(ordered), "why": "; ".join(f"{k}: {' < '.join(v)}" for k, v in ordered.items()) + ". These words have an order, so they become 0, 1, 2 in that order instead of unrelated 0/1 columns. The model can then use 'more' and 'less'.", "code": "\n".join(f"df['{k}'] = df['{k}'].str.lower().map({{v: i for i, v in enumerate({vals!r})}})" for k, vals in ordered.items())})
+    name_hint = [c["name"] for c in cats if c["name"] not in ordered and any(w in c["name"].lower() for w in ("size", "level", "grade", "rating", "rank", "tier"))]
+    if name_hint:
+        steps.append({"step": "Check whether " + ", ".join(name_hint) + " has a natural order", "why": "The name suggests an order but the values were not recognised. If they are ordered, map them to numbers by hand so the model can use the order.", "code": f"order = {{'low': 0, 'medium': 1, 'high': 2}}  # edit to match your values\ndf['{name_hint[0]}'] = df['{name_hint[0]}'].map(order)"})
     if corr:
         strong = []
         cm = corr["matrix"]
@@ -262,7 +271,7 @@ def cleaning_plan(df: pd.DataFrame, cols: list[dict], duplicates: int, corr: dic
                 if abs(cm[i][j]) > 0.9:
                     strong.append((numeric_cols[i], numeric_cols[j], cm[i][j]))
         if strong:
-            steps.append({"step": "Consider dropping one of each near-duplicate pair", "why": "; ".join(f"{a} and {b} ({r:.2f})" for a, b, r in strong[:4]) + ". Two columns that say the same thing make linear models unstable and double-count that signal. Trees do not mind.", "code": "df = df.drop(columns=[" + ", ".join(repr(b) for _, b, _ in strong[:4]) + "])"})
+            steps.append({"step": "Drop one of each near-duplicate pair", "why": "; ".join(f"{a} and {b} ({r:.2f})" for a, b, r in strong[:4]) + ". Two columns that say the same thing make linear models unstable and double-count that signal. The tool drops the second of any pair above 0.95.", "code": "df = df.drop(columns=[" + ", ".join(repr(b) for _, b, _ in strong[:4]) + "])"})
     steps.append({"step": "Scale the number columns", "why": "Put every number column on the same scale (mean 0, spread 1) so that no column dominates just because its numbers are bigger. Essential for KNN, SVM, logistic regression and neural networks. Fit the scaler on training rows only.", "code": "from sklearn.preprocessing import StandardScaler\nscaler = StandardScaler()\nX_train = scaler.fit_transform(X_train)\nX_test = scaler.transform(X_test)"})
     steps.append({"step": "Do all of it inside a pipeline", "why": "A scikit-learn Pipeline runs every step above on the training rows, remembers the fill values, caps and scales, and reapplies them to new rows. That is how the tool does it, so nothing leaks from the test rows into training.", "code": "from sklearn.pipeline import Pipeline\nfrom sklearn.compose import ColumnTransformer\npipe = Pipeline([('prep', preprocessor), ('model', model)])\npipe.fit(X_train, y_train)"})
     if target:

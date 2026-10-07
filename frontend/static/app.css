@@ -254,3 +254,10 @@ details[open] > summary::before { transform: rotate(45deg); }
   .hero { padding: 24px 18px; } .hero h1 { font-size: 1.7rem; }
   html { font-size: 14.5px; }
 }
+
+.refine { margin: 8px 0 14px; display: flex; flex-direction: column; gap: 8px; }
+.refine-row { display: grid; grid-template-columns: 92px 1fr; gap: 12px; align-items: start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--surface); }
+.refine-row.on { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); background: color-mix(in srgb, var(--ok) 5%, var(--surface)); }
+.refine-row .badge { justify-self: start; margin-top: 2px; }
+.refine-row p { margin: 2px 0 4px; }
+@media (max-width: 640px) { .refine-row { grid-template-columns: 1fr; } }

@@ -9,6 +9,9 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 from sklearn.base import clone
+from sklearn.compose import TransformedTargetRegressor
+from sklearn.inspection import permutation_importance
+from sklearn.model_selection import cross_val_predict
 from sklearn.ensemble import (
     BaggingClassifier,
     BaggingRegressor,
@@ -58,7 +61,30 @@ def prepare(df: pd.DataFrame, target: str, task: str, prep_options: dict | None)
         y_enc = y_enc.astype(float)
         classes = None
     ct, prep_info = preprocess.build(X, prep_options)
-    return {"X": X, "y": y_enc, "classes": classes, "prep": ct, "prep_info": prep_info}
+    opts = preprocess.normalize(prep_options)
+    out = {"X": X, "y": y_enc, "classes": classes, "prep": ct, "prep_info": prep_info, "balance": False, "log_target": False}
+    if task == "classification":
+        share = y_enc.value_counts(normalize=True)
+        out["minority_share"] = round(float(share.min()), 4)
+        want = prep_options.get("balance", "auto") if prep_options else "auto"
+        out["balance"] = bool(want is True or want == "on" or (want == "auto" and share.min() < 0.35))
+    else:
+        want = prep_options.get("log_target", "auto") if prep_options else "auto"
+        skew = float(y_enc.skew()) if len(y_enc) > 10 else 0.0
+        out["target_skew"] = round(skew, 3)
+        out["log_target"] = bool(want is True or want == "on" or (want == "auto" and y_enc.min() >= 0 and abs(skew) >= 1.0))
+    return out
+
+
+def make_model(task: str, key: str, P: dict):
+    """Model from the shelf with the refinements that apply: balanced class weights, log-transformed target."""
+    reg = catalog.registry(task)
+    est = reg[key]["make"]()
+    if P.get("balance"):
+        catalog.set_balanced(est, key)
+    if P.get("log_target"):
+        est = TransformedTargetRegressor(regressor=est, func=np.log1p, inverse_func=np.expm1)
+    return est
 
 
 def _cv(task: str, n_splits: int):
@@ -92,7 +118,12 @@ def leaderboard(df, params: dict, progress: Progress, deadline: float) -> dict:
     folds = min(config.CV_FOLDS, int(params.get("folds") or config.CV_FOLDS))
     cv = _cv(task, folds)
     rows: list[dict] = []
-    narration = [
+    narration = []
+    if P.get("balance"):
+        narration.append({"step": "Class balance", "text": f"The smallest class is only {P['minority_share']*100:.0f}% of the rows. Models that support it are told to weigh the rare class more (class_weight='balanced'), so they cannot score well just by always guessing the common class.", "code": "LogisticRegression(class_weight='balanced')  # same for SVM, trees, forests"})
+    if P.get("log_target"):
+        narration.append({"step": "Answer column", "text": f"The answer column has a long tail (skew {P['target_skew']}). Every model is trained to predict log(1 + value) and its predictions are converted back, which usually cuts the error on big values a lot.", "code": "TransformedTargetRegressor(regressor=model, func=np.log1p, inverse_func=np.expm1)"})
+    narration += [
         {"step": "Data", "text": f"Using {len(X)} rows and {X.shape[1]} columns." + (f" Only {len(X)} of your {len(P['X'])} rows were used here so the test stays fast. Train the winner afterwards to use all rows." if subsampled else ""), "code": f"X = df.drop(columns=['{target}']); y = df['{target}']"},
         {"step": "Validation", "text": f"The rows are cut into {folds} parts. Each model is trained {folds} times, each time hiding a different part and scoring on it. The {folds} scores are averaged. This is called cross-validation and it stops one lucky split from fooling you.", "code": f"cross_val_score(pipe, X, y, cv={folds}, scoring='{scoring}')"},
     ]
@@ -108,7 +139,7 @@ def leaderboard(df, params: dict, progress: Progress, deadline: float) -> dict:
         if m.get("slow") and len(X) > config.SLOW_MODEL_ROWS and not params.get("include_slow"):
             rows.append({"key": key, "name": m["name"], "family": m["family"], "status": "skipped", "note": f"Skipped: this model scales badly above {config.SLOW_MODEL_ROWS} rows. Tick 'include slow models' to force it."})
             continue
-        pipe = Pipeline([("prep", clone(P["prep"])), ("model", m["make"]())])
+        pipe = Pipeline([("prep", clone(P["prep"])), ("model", make_model(task, key, P))])
         t0 = time.time()
         try:
             scores = cross_val_score(pipe, X, y, cv=cv, scoring=scoring, n_jobs=1, error_score="raise")
@@ -150,9 +181,10 @@ def _leaderboard_summary(ranked: list[dict], task: str, scoring: str) -> list[st
     return out
 
 
-def build_estimator(task: str, spec: dict) -> tuple[Any, str, list[dict]]:
+def build_estimator(task: str, spec: dict, P: dict | None = None) -> tuple[Any, str, list[dict]]:
     """spec: {"kind": "single"|"voting"|"stacking"|"bagging", "model": key, "members": [keys], "final": key, "params": {...}}"""
     reg = catalog.registry(task)
+    P = P or {}
     kind = spec.get("kind", "single")
     narr: list[dict] = []
     if kind == "single":
@@ -161,13 +193,18 @@ def build_estimator(task: str, spec: dict) -> tuple[Any, str, list[dict]]:
             raise ValueError(f"Unknown model '{key}'.")
         est = reg[key]["make"]()
         est.set_params(**_clean_params(spec.get("params"), est))
-        narr.append({"step": "Model", "text": f"{reg[key]['name']}: {reg[key]['explain']}", "code": f"{est.__class__.__name__}({_fmt_params(est, reg[key])})"})
+        if P.get("balance"):
+            catalog.set_balanced(est, key)
+        if P.get("log_target"):
+            est = TransformedTargetRegressor(regressor=est, func=np.log1p, inverse_func=np.expm1)
+        inner = est.regressor if isinstance(est, TransformedTargetRegressor) else est
+        narr.append({"step": "Model", "text": f"{reg[key]['name']}: {reg[key]['explain']}", "code": f"{inner.__class__.__name__}({_fmt_params(inner, reg[key])})"})
         return est, reg[key]["name"], narr
     members = [k for k in (spec.get("members") or []) if k in reg]
     if kind in ("voting", "stacking") and len(members) < 2:
         raise ValueError("Pick at least two member models for an ensemble.")
     if kind == "voting":
-        ests = [(k, reg[k]["make"]()) for k in members]
+        ests = [(k, make_model(task, k, P) if task == "classification" else reg[k]["make"]()) for k in members]
         if task == "classification":
             voting = spec.get("voting", "soft")
             if voting == "soft":
@@ -180,11 +217,13 @@ def build_estimator(task: str, spec: dict) -> tuple[Any, str, list[dict]]:
             narr.append({"step": "Ensemble", "text": f"{catalog.ENSEMBLE_TEXT['voting']} Members: {', '.join(reg[k]['name'] for k in members)}.", "code": f"VotingClassifier([...], voting='{voting}')"})
         else:
             est = VotingRegressor(ests, n_jobs=1)
+            if P.get("log_target"):
+                est = TransformedTargetRegressor(regressor=est, func=np.log1p, inverse_func=np.expm1)
             name = f"Voting ({', '.join(reg[k]['name'] for k in members)})"
             narr.append({"step": "Ensemble", "text": f"Voting regressor: averages the predictions of {', '.join(reg[k]['name'] for k in members)}.", "code": "VotingRegressor([...])"})
         return est, name, narr
     if kind == "stacking":
-        ests = [(k, reg[k]["make"]()) for k in members]
+        ests = [(k, make_model(task, k, P) if task == "classification" else reg[k]["make"]()) for k in members]
         final_key = spec.get("final")
         if task == "classification":
             final = reg[final_key]["make"]() if final_key in reg else LogisticRegression(max_iter=1000)
@@ -192,6 +231,8 @@ def build_estimator(task: str, spec: dict) -> tuple[Any, str, list[dict]]:
         else:
             final = reg[final_key]["make"]() if final_key in reg else Ridge()
             est = StackingRegressor(ests, final_estimator=final, cv=3, n_jobs=1)
+            if P.get("log_target"):
+                est = TransformedTargetRegressor(regressor=est, func=np.log1p, inverse_func=np.expm1)
         name = f"Stacking ({', '.join(reg[k]['name'] for k in members)}) -> {final.__class__.__name__}"
         narr.append({"step": "Ensemble", "text": f"{catalog.ENSEMBLE_TEXT['stacking']} Base: {', '.join(reg[k]['name'] for k in members)}. Meta-learner: {final.__class__.__name__}.", "code": f"Stacking{'Classifier' if task == 'classification' else 'Regressor'}([...], final_estimator={final.__class__.__name__}(), cv=3)"})
         return est, name, narr
@@ -232,7 +273,7 @@ def train(df, params: dict, progress: Progress, deadline: float) -> dict:
     X, y, _ = preprocess.subsample(P["X"], P["y"], config.TRAIN_ROWS, task == "classification")
     test_size = float(min(max(params.get("test_size", 0.2), 0.1), 0.5))
     Xtr, Xte, ytr, yte = _split(X, y, task, test_size)
-    est, name, narr = build_estimator(task, params.get("spec") or {"kind": "single", "model": params.get("model")})
+    est, name, narr = build_estimator(task, params.get("spec") or {"kind": "single", "model": params.get("model")}, P)
     pipe = Pipeline([("prep", P["prep"]), ("model", est)])
     narration = [
         {"step": "Split", "text": f"{len(Xtr)} rows are used to teach the model. {len(Xte)} rows ({int(test_size*100)}%) are hidden and used only to test it afterwards, so the score shows how it does on rows it has never seen.", "code": f"train_test_split(X, y, test_size={test_size}, random_state=42{', stratify=y' if task == 'classification' else ''})"},
@@ -245,8 +286,12 @@ def train(df, params: dict, progress: Progress, deadline: float) -> dict:
     pred = pipe.predict(Xte)
     train_pred = pipe.predict(Xtr)
     names = preprocess.feature_names(pipe.named_steps["prep"])
+    threshold = None
     if task == "classification":
         proba = pipe.predict_proba(Xte) if hasattr(pipe, "predict_proba") else None
+        threshold = params.get("threshold")
+        if threshold and proba is not None and proba.shape[1] == 2:
+            pred = (proba[:, 1] >= float(threshold)).astype(int)
         ev = evaluate.classification(yte, pred, proba, P["classes"])
         train_score = float(evaluate.M.accuracy_score(ytr, train_pred))
     else:
@@ -262,7 +307,8 @@ def train(df, params: dict, progress: Progress, deadline: float) -> dict:
     return {
         "task": task, "target": target, "model_name": name, "rows_used": len(X), "rows_total": len(P["X"]),
         "test_size": test_size, "evaluation": ev, "preprocessing": P["prep_info"], "narration": narration,
-        "feature_names": names[:200], "features": list(P["X"].columns), "classes": P["classes"],
+        "feature_names": names[:200], "features": list(P["X"].columns), "classes": P["classes"], "threshold": threshold,
+        "balance": P.get("balance"), "log_target": P.get("log_target"),
         "_pipeline": pipe,
     }
 
@@ -293,17 +339,18 @@ def tune(df, params: dict, progress: Progress, deadline: float) -> dict:
     n_iter = int(min(max(params.get("n_iter", 12), 2), config.TUNE_MAX_ITER))
     folds = min(config.CV_FOLDS, int(params.get("folds") or config.CV_FOLDS))
     scoring = _scoring(task, params.get("metric"))
-    pipe = Pipeline([("prep", P["prep"]), ("model", m["make"]())])
+    pipe = Pipeline([("prep", P["prep"]), ("model", make_model(task, key, P))])
+    space = {("model__regressor__" + k.split("model__", 1)[1] if P.get("log_target") else k): v for k, v in m["space"].items()}
     progress(f"Searching {n_iter} configurations of {m['name']}", 0.1)
-    search = RandomizedSearchCV(pipe, m["space"], n_iter=n_iter, cv=_cv(task, folds), scoring=scoring, n_jobs=1, random_state=config.RANDOM_STATE, refit=False, error_score=np.nan)
+    search = RandomizedSearchCV(pipe, space, n_iter=n_iter, cv=_cv(task, folds), scoring=scoring, n_jobs=1, random_state=config.RANDOM_STATE, refit=False, error_score=np.nan)
     search.fit(X, y)
     res = search.cv_results_
     trials = []
     for i in range(len(res["mean_test_score"])):
-        p = {k.replace("model__", ""): _jsonable(v) for k, v in res["params"][i].items()}
+        p = {k.replace("model__regressor__", "").replace("model__", ""): _jsonable(v) for k, v in res["params"][i].items()}
         trials.append({"params": p, "mean": _r(res["mean_test_score"][i]), "std": _r(res["std_test_score"][i]), "seconds": _r(res["mean_fit_time"][i])})
     trials.sort(key=lambda t: (t["mean"] is None, -(t["mean"] or 0)))
-    base = cross_val_score(Pipeline([("prep", clone(P["prep"])), ("model", m["make"]())]), X, y, cv=_cv(task, folds), scoring=scoring, n_jobs=1)
+    base = cross_val_score(Pipeline([("prep", clone(P["prep"])), ("model", make_model(task, key, P))]), X, y, cv=_cv(task, folds), scoring=scoring, n_jobs=1)
     best = trials[0]
     narration = [
         {"step": "Search", "text": f"{n_iter} random combinations of settings for {m['name']} were tried. Each one was scored with {folds}-part cross-validation, so {n_iter * folds} models were trained in total.", "code": f"RandomizedSearchCV(pipe, space, n_iter={n_iter}, cv={folds}, scoring='{scoring}')"},
@@ -321,7 +368,7 @@ def curve(df, params: dict, progress: Progress, deadline: float) -> dict:
     task, target = params["task"], params["target"]
     P = prepare(df, target, task, params.get("preprocess"))
     X, y, _ = preprocess.subsample(P["X"], P["y"], config.TUNE_ROWS, task == "classification")
-    est, name, _ = build_estimator(task, params.get("spec") or {"kind": "single", "model": params.get("model")})
+    est, name, _ = build_estimator(task, params.get("spec") or {"kind": "single", "model": params.get("model")}, P)
     pipe = Pipeline([("prep", P["prep"]), ("model", est)])
     scoring = _scoring(task, params.get("metric"))
     progress(f"Learning curve for {name}", 0.2)
@@ -386,9 +433,9 @@ def auto(df, params: dict, progress: Progress, deadline: float) -> dict:
         if time.time() > deadline - 20:
             ensembles.append({"key": f"ens{i}", "name": label, "family": "ensemble", "status": "skipped", "note": "Time budget exhausted.", "spec": spec})
             continue
-        progress(f"Trying {label.lower()}", 0.6 + i * 0.12)
+        progress(f"Trying {label.lower()}", 0.55 + i * 0.08)
         try:
-            est, name, _ = build_estimator(task, spec)
+            est, name, _ = build_estimator(task, spec, P)
             pipe = Pipeline([("prep", clone(P["prep"])), ("model", est)])
             t0 = time.time()
             scores = cross_val_score(pipe, X, y, cv=cv, scoring=scoring, n_jobs=1, error_score="raise")
@@ -401,9 +448,86 @@ def auto(df, params: dict, progress: Progress, deadline: float) -> dict:
     best = everything[0]
     runner_up = everything[1] if len(everything) > 1 else None
     best_spec = best.get("spec") or {"kind": "single", "model": best["key"]}
+    refinements: list[dict] = []
+    opts = preprocess.normalize(params.get("preprocess"))
+    cv_params = {**params}
+
+    def cv_score(spec, prep_opts):
+        Pq = prepare(df, target, task, prep_opts)
+        Xq, yq, _ = preprocess.subsample(Pq["X"], Pq["y"], config.LEADERBOARD_ROWS, task == "classification")
+        est_q, _, _ = build_estimator(task, spec, Pq)
+        return float(cross_val_score(Pipeline([("prep", Pq["prep"]), ("model", est_q)]), Xq, yq, cv=_cv(task, folds), scoring=scoring, n_jobs=1).mean())
+
+    # 1. Feature selection: drop columns the winner does not use, keep the change only if the score holds.
+    if params.get("feature_select", True) and time.time() < deadline - 60 and len(P["X"].columns) >= 4:
+        progress("Checking which columns the winner really needs", 0.72)
+        try:
+            est_w, _, _ = build_estimator(task, best_spec, P)
+            pipe_w = Pipeline([("prep", clone(P["prep"])), ("model", est_w)])
+            Xtr, Xte, ytr, yte = _split(X, y, task, 0.25)
+            pipe_w.fit(Xtr, ytr)
+            n = min(len(Xte), config.PERM_IMPORTANCE_ROWS)
+            idx = np.random.RandomState(0).choice(len(Xte), n, replace=False)
+            imp = permutation_importance(pipe_w, Xte.iloc[idx], np.asarray(yte)[idx], n_repeats=3, random_state=0, scoring=scoring, n_jobs=1)
+            useless = [c for c, m_, s_ in zip(Xte.columns, imp.importances_mean, imp.importances_std) if m_ <= 0.0005]
+            if useless and len(useless) < len(Xte.columns):
+                before = best["mean"]
+                new_opts = {**opts, "drop_columns": list(set(opts["drop_columns"]) | set(useless))}
+                after = cv_score(best_spec, new_opts)
+                keep = after >= before - 0.002
+                refinements.append({"step": "Drop columns the model does not use", "applied": keep, "before": round(before, 4), "after": round(after, 4),
+                                    "text": f"Shuffling {', '.join(useless)} did not hurt the winner at all, so those columns carry no usable signal. " + (f"Without them the score went from {before:.3f} to {after:.3f}, so they are dropped: a simpler model that is just as good." if keep else f"Without them the score dropped from {before:.3f} to {after:.3f}, so they are kept."),
+                                    "code": f"X = X.drop(columns={useless!r})"})
+                if keep:
+                    opts = new_opts; cv_params["preprocess"] = opts; best["mean"] = round(after, 5)
+            else:
+                refinements.append({"step": "Drop columns the model does not use", "applied": False, "text": "Every column changed the winner's score when shuffled, so all of them stay.", "code": "permutation_importance(pipe, X_test, y_test, n_repeats=3)"})
+        except Exception as e:  # noqa: BLE001
+            refinements.append({"step": "Drop columns the model does not use", "applied": False, "text": f"Skipped: {type(e).__name__}.", "code": ""})
+
+    # 2. Tune the winner's settings when it is a single model with a search space.
+    if params.get("tune_winner", True) and best_spec.get("kind") == "single" and reg.get(best_spec.get("model"), {}).get("space") and time.time() < deadline - 50:
+        progress(f"Tuning {best['name']}", 0.8)
+        try:
+            tr = tune(df, {**cv_params, "model": best_spec["model"], "n_iter": 8}, lambda m, f: None, deadline - 15)
+            if tr["trials"] and tr["trials"][0]["mean"] is not None and tr["trials"][0]["mean"] > tr["baseline"] + 0.002:
+                best_spec = {**best_spec, "params": tr["best_params"]}
+                refinements.append({"step": "Tune the winner's settings", "applied": True, "before": tr["baseline"], "after": tr["trials"][0]["mean"], "text": f"8 random settings were tried. {tr['best_params']} beat the defaults: {tr['baseline']:.3f} to {tr['trials'][0]['mean']:.3f}.", "code": f"RandomizedSearchCV(pipe, space, n_iter=8, cv={folds})"})
+                best["mean"] = tr["trials"][0]["mean"]; best["name"] = best["name"] + " (tuned)"
+            else:
+                refinements.append({"step": "Tune the winner's settings", "applied": False, "before": tr["baseline"], "after": (tr["trials"][0]["mean"] if tr["trials"] else None), "text": "8 random settings were tried; none beat the defaults by a meaningful amount, so the defaults stay.", "code": f"RandomizedSearchCV(pipe, space, n_iter=8, cv={folds})"})
+        except Exception as e:  # noqa: BLE001
+            refinements.append({"step": "Tune the winner's settings", "applied": False, "text": f"Skipped: {type(e).__name__}.", "code": ""})
+
+    # 3. Decision threshold for imbalanced two-class problems.
+    threshold = None
+    if task == "classification" and P.get("balance") and P["classes"] and len(P["classes"]) == 2 and time.time() < deadline - 30:
+        progress("Choosing the decision threshold", 0.86)
+        try:
+            Pq = prepare(df, target, task, opts)
+            Xq, yq, _ = preprocess.subsample(Pq["X"], Pq["y"], config.LEADERBOARD_ROWS, True)
+            est_q, _, _ = build_estimator(task, best_spec, Pq)
+            pipe_q = Pipeline([("prep", Pq["prep"]), ("model", est_q)])
+            if hasattr(est_q, "predict_proba") or hasattr(est_q, "decision_function"):
+                proba = cross_val_predict(pipe_q, Xq, yq, cv=_cv(task, folds), method="predict_proba", n_jobs=1)[:, 1]
+                yq_arr = np.asarray(yq)
+                base_ba = float(evaluate.M.balanced_accuracy_score(yq_arr, (proba >= 0.5).astype(int)))
+                best_t, best_ba = 0.5, base_ba
+                for t in np.linspace(0.2, 0.8, 25):
+                    ba = float(evaluate.M.balanced_accuracy_score(yq_arr, (proba >= t).astype(int)))
+                    if ba > best_ba + 1e-9:
+                        best_t, best_ba = float(t), ba
+                if best_ba > base_ba + 0.005 and abs(best_t - 0.5) > 0.02:
+                    threshold = round(best_t, 3)
+                    refinements.append({"step": "Move the decision threshold", "applied": True, "before": round(base_ba, 4), "after": round(best_ba, 4), "text": f"By default a row is called '{P['classes'][1]}' when the model is at least 50% sure. Calling it at {threshold*100:.0f}% raises balanced accuracy from {base_ba:.3f} to {best_ba:.3f}, so the rare class is caught more often.", "code": f"pred = (pipe.predict_proba(X)[:, 1] >= {threshold})"})
+                else:
+                    refinements.append({"step": "Move the decision threshold", "applied": False, "text": "Shifting the 50% cut-off did not improve balanced accuracy, so it stays at 50%.", "code": "pred = (pipe.predict_proba(X)[:, 1] >= 0.5)"})
+        except Exception as e:  # noqa: BLE001
+            refinements.append({"step": "Move the decision threshold", "applied": False, "text": f"Skipped: {type(e).__name__}.", "code": ""})
+
     # Train the winner on a hold-out split for full charts and a saved model.
-    progress(f"Training the winner: {best['name']}", 0.85)
-    final = train(df, {**params, "spec": best_spec}, lambda m, f: None, deadline)
+    progress(f"Training the winner: {best['name']}", 0.9)
+    final = train(df, {**cv_params, "spec": best_spec, "threshold": threshold}, lambda m, f: None, deadline)
     # Plain-language verdict
     verdict = []
     noise = max(best.get("std", 0), (runner_up or {}).get("std", 0) or 0)
@@ -434,7 +558,9 @@ def auto(df, params: dict, progress: Progress, deadline: float) -> dict:
     return {
         "task": task, "target": target, "scoring": scoring, "folds": folds, "rows_used": race["rows_used"], "rows_total": race["rows_total"], "subsampled": race["subsampled"],
         "leaderboard": everything + [r for r in race["leaderboard"] if r["status"] != "ok"] + [e for e in ensembles if e["status"] != "ok"],
-        "best": {"name": best["name"], "mean": best["mean"], "std": best.get("std"), "family": best["family"], "spec": best_spec},
+        "best": {"name": best["name"], "mean": best["mean"], "std": best.get("std"), "family": best["family"], "spec": best_spec, "preprocess": opts},
         "verdict": verdict, "final": {k: v for k, v in final.items() if k not in ("narration", "preprocessing", "_pipeline", "code")}, "models_tried": tried,
-        "model_id": None, "_pipeline": final.get("_pipeline"), "preprocessing": race["preprocessing"], "narration": narration,
+        "refinements": refinements, "threshold": threshold, "balance": P.get("balance"), "log_target": P.get("log_target"),
+        "features": final.get("features"), "classes": final.get("classes"), "model_name": final.get("model_name"), "test_size": final.get("test_size"),
+        "model_id": None, "_pipeline": final.get("_pipeline"), "preprocessing": final.get("preprocessing") or race["preprocessing"], "narration": narration,
     }

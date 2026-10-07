@@ -238,6 +238,16 @@ FAMILY_TEXT = {
 }
 
 
+BALANCEABLE = {"logreg", "svm", "tree", "rf", "et", "hgb"}
+
+
+def set_balanced(est, key: str):
+    """Give minority classes more weight where the model supports it."""
+    if key in BALANCEABLE and "class_weight" in est.get_params():
+        est.set_params(class_weight="balanced")
+    return est
+
+
 def registry(task: str) -> dict[str, dict[str, Any]]:
     if task == "classification":
         return CLASSIFIERS

@@ -224,7 +224,10 @@ def get_model(model_id: str) -> dict:
     inputs = []
     for name in feats.get("features", []):
         c = cols.get(name, {})
-        if name in dropped or c.get("looks_id") or c.get("type") == "datetime":
+        if name in dropped or c.get("looks_id"):
+            continue
+        if c.get("type") == "datetime":
+            inputs.append({"name": name, "kind": "text", "choices": [], "default": "2024-01-01", "hint": "a date like 2024-01-31"})
             continue
         if c.get("type") == "numeric":
             inputs.append({"name": name, "kind": "number", "default": c.get("median"), "min": c.get("min"), "max": c.get("max")})
@@ -266,13 +269,18 @@ def predict(model_id: str, body: PredictIn) -> dict:
     out: dict = {"predictions": []}
     classes = m["features"].get("classes")
     if classes:
-        out["predictions"] = [classes[int(p)] for p in pred]
+        thr = m["features"].get("threshold")
         if hasattr(pipe, "predict_proba"):
             try:
-                out["probabilities"] = [[round(float(x), 4) for x in r] for r in pipe.predict_proba(df)]
+                proba = pipe.predict_proba(df)
+                out["probabilities"] = [[round(float(x), 4) for x in r] for r in proba]
                 out["classes"] = classes
+                if thr and proba.shape[1] == 2:
+                    pred = (proba[:, 1] >= float(thr)).astype(int)
+                    out["threshold"] = thr
             except Exception:
                 pass
+        out["predictions"] = [classes[int(p)] for p in pred]
     else:
         out["predictions"] = [round(float(p), 6) for p in pred]
     return out
@@ -309,7 +317,7 @@ def download_notebook(model_id: str) -> Response:
     with db.connect() as con:
         m = _model_row(con, model_id)
     f = m["features"]
-    code, imports = codegen.estimator_code(m["task"], f.get("spec") or {})
+    code, imports = codegen.estimator_code(m["task"], f.get("spec") or {}, bool(f.get("balance")), bool(f.get("log_target")))
     nb = export.notebook({"name": m["name"], "task": m["task"], "target": m["target"], "features": f["features"], "numeric": f.get("numeric", []),
                           "categorical": f.get("categorical", []), "prep_options": f.get("prep_options", {}), "estimator_code": code, "imports": imports, "test_size": f.get("test_size", 0.2)})
     return Response(nb, media_type="application/x-ipynb+json", headers={"Content-Disposition": f'attachment; filename="mlhelp-{model_id}.ipynb"'})
@@ -319,5 +327,6 @@ def download_notebook(model_id: str) -> Response:
 def model_code(model_id: str) -> str:
     with db.connect() as con:
         m = _model_row(con, model_id)
-    code, imports = codegen.estimator_code(m["task"], m["features"].get("spec") or {})
+    f = m["features"]
+    code, imports = codegen.estimator_code(m["task"], f.get("spec") or {}, bool(f.get("balance")), bool(f.get("log_target")))
     return imports + f"\nmodel = {code}\n"
