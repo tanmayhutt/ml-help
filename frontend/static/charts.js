@@ -1,6 +1,6 @@
 // Hand-drawn SVG charts. Each function returns an <svg> element sized to its container width via viewBox.
 const NS = "http://www.w3.org/2000/svg";
-const PALETTE = ["#2563eb", "#d97706", "#059669", "#dc2626", "#7c3aed", "#0891b2", "#be185d", "#4d7c0f", "#b45309", "#1d4ed8"];
+const PALETTE = ["#1f4e5f", "#b23a16", "#2d6a4f", "#8a5a00", "#5b4b8a", "#2a7f9e", "#9a2b55", "#4d6a1f", "#6b4a2b", "#3b5bdb"];
 
 function s(tag, attrs = {}, text) {
   const n = document.createElementNS(NS, tag);
@@ -160,7 +160,7 @@ export function confusionMatrix(matrix, classes) {
     svg.append(s("text", { x: labelW - 8, y: labelW + i * cell + cell / 2 + 4, "text-anchor": "end", class: "tick" }, String(classes[i]).slice(0, 12)));
     row.forEach((v, j) => {
       const share = v / total;
-      svg.append(s("rect", { x: labelW + j * cell, y: labelW + i * cell, width: cell - 1, height: cell - 1, fill: i === j ? "#059669" : "#dc2626", opacity: 0.08 + share * 0.85 }));
+      svg.append(s("rect", { x: labelW + j * cell, y: labelW + i * cell, width: cell - 1, height: cell - 1, fill: i === j ? "#2d6a4f" : "#b23a16", opacity: 0.08 + share * 0.85 }));
       svg.append(s("text", { x: labelW + j * cell + cell / 2, y: labelW + i * cell + cell / 2 + 4, "text-anchor": "middle", class: share > 0.5 ? "cell-light" : "cell" }, v));
     });
   });
@@ -176,7 +176,7 @@ export function heatmap(columns, matrix) {
   matrix.forEach((row, i) => {
     svg.append(s("text", { x: labelW - 6, y: labelW + i * cell + cell / 2 + 4, "text-anchor": "end", class: "tick" }, String(columns[i]).slice(0, 16)));
     row.forEach((v, j) => {
-      const fill = v >= 0 ? "#2563eb" : "#dc2626";
+      const fill = v >= 0 ? "#1f4e5f" : "#b23a16";
       const r = s("rect", { x: labelW + j * cell, y: labelW + i * cell, width: cell - 1, height: cell - 1, fill, opacity: 0.05 + Math.abs(v) * 0.9 });
       r.append(s("title", {}, `${columns[i]} vs ${columns[j]}: ${v.toFixed(2)}`));
       svg.append(r);
@@ -200,7 +200,7 @@ export function boxPlot(box, opts = {}) {
   svg.append(s("rect", { x: x(box.q1), y: y - 9, width: Math.max(x(box.q3) - x(box.q1), 1), height: 18, fill: PALETTE[0], opacity: 0.35, rx: 2 }));
   svg.append(s("line", { x1: x(box.median), x2: x(box.median), y1: y - 9, y2: y + 9, stroke: PALETTE[0], "stroke-width": 2 }));
   [box.min, box.max].forEach((v) => svg.append(s("line", { x1: x(v), x2: x(v), y1: y - 5, y2: y + 5, stroke: "currentColor", "stroke-width": 1.5, opacity: 0.6 })));
-  (box.outliers || []).forEach((v) => svg.append(s("circle", { cx: x(v), cy: y, r: 2.2, fill: "#dc2626", opacity: 0.8 })));
+  (box.outliers || []).forEach((v) => svg.append(s("circle", { cx: x(v), cy: y, r: 2.2, fill: "#b23a16", opacity: 0.8 })));
   svg.append(s("text", { x: m.l, y: h - 4, class: "tick" }, nice(xd[0])));
   svg.append(s("text", { x: w - m.r, y: h - 4, "text-anchor": "end", class: "tick" }, nice(xd[1])));
   return svg;

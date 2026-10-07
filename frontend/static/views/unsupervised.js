@@ -109,7 +109,7 @@ export async function render(root, [id], signal) {
   function anomalyResult(r) {
     return [
       el("p", { class: "big-answer", text: `${r.flagged} unusual rows found out of ${r.rows_used.toLocaleString()}.` }),
-      el("div", { class: "col-card" }, el("h4", { text: "Where they are" }), scatterChart(r.points.xy, r.points.labels), el("p", { class: "chart-note", text: "Orange dots are the unusual rows. " + r.points.axis })),
+      el("div", { class: "col-card" }, el("h4", { text: "Where they are" }), scatterChart(r.points.xy, r.points.labels), el("p", { class: "chart-note", text: "Red dots are the unusual rows. " + r.points.axis })),
       el("h4", { text: "Most unusual rows first" }), table(r.columns.map((c) => c === "_score" ? "how unusual" : c), r.top, { class: "compact" }),
       details("How this was done, step by step", narration(r.narration), true), fullCode(r)];
   }

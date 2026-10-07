@@ -2,16 +2,9 @@ import { api, cached } from "../api.js";
 import { el, step, button, notice, table, svgIcon, bytes, timeAgo, toast, spinner, clear } from "../ui.js";
 
 export async function render(root) {
-  root.append(el("section", { class: "hero" },
-    el("h1", { text: "Find the best model for your data" }),
-    el("p", { text: "Add a table, pick the column to predict, press one button. Every scikit-learn model is tested, the best ones are combined, and you get a clear winner you can try right away, with the full Python code." }),
-    el("div", { class: "hero-steps" },
-      el("span", { class: "hero-step" }, el("b", { text: "1" }), "Add your data"),
-      el("span", { class: "hero-step" }, el("b", { text: "2" }), "Understand and clean it"),
-      el("span", { class: "hero-step" }, el("b", { text: "3" }), "Pick what to predict"),
-      el("span", { class: "hero-step" }, el("b", { text: "4" }), "Find the best model"),
-      el("span", { class: "hero-step" }, el("b", { text: "5" }), "Try it on new values"))));
-
+  root.append(el("section", { class: "intro" },
+    el("div", {}, el("h1", { text: "Find the best model for your data." }), el("p", { text: "Add a table, say which column you want to predict, and press one button. Every scikit-learn model is tested fairly, the best ones are combined, and you get a clear winner you can try with your own values, with the Python code to reproduce it." })),
+    el("div", { class: "howto" }, el("h4", { text: "How it works" }), el("ol", {}, ["Add a CSV or Excel file.", "Look at the data and the cleaning plan.", "Pick the column to predict.", "Press Find the best model.", "Try the winner on new values, or download it."].map((t) => el("li", { text: t }))))));
   const [health, samplesList, list] = await Promise.all([api.health(), cached("samples"), api.datasets()]);
   const L = health.limits;
 

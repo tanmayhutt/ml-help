@@ -21,12 +21,36 @@ const routes = [
 ];
 
 const main = document.getElementById("main");
+const JOURNEY = [
+  { key: "data", label: "Add your data", href: () => "#/datasets" },
+  { key: "understand", label: "Understand and clean", href: (id) => (id ? `#/dataset/${id}` : "#/datasets") },
+  { key: "predict", label: "Pick what to predict", href: (id) => (id ? `#/dataset/${id}/supervised` : null) },
+  { key: "result", label: "Find the best model", href: (id) => (id ? `#/dataset/${id}/supervised` : null) },
+  { key: "try", label: "Try it on new values", href: (id) => (id ? `#/dataset/${id}/predict` : null) },
+];
+function journey(path) {
+  const ol = document.getElementById("journey");
+  if (!ol) return;
+  const m = path.match(/^\/dataset\/([^/]+)(?:\/([^/]+))?/);
+  const id = m ? m[1] : null; const sub = m ? m[2] : null;
+  let now = 0;
+  if (m && !sub) now = 1; else if (sub === "supervised" || sub === "unsupervised") now = 2; else if (sub === "predict" || path.startsWith("/model/")) now = 4;
+  if (path.startsWith("/jobs")) now = -1;
+  ol.replaceChildren(...JOURNEY.map((st, i) => {
+    const href = st.href(id);
+    const li = document.createElement("li");
+    li.className = i < now ? "done" : i === now ? "now" : "";
+    if (href && i <= Math.max(now, 1)) { const a = document.createElement("a"); a.href = href; a.textContent = st.label; li.append(a); } else li.textContent = st.label;
+    return li;
+  }));
+}
 let currentAbort = null;
 
 async function render() {
   const path = location.hash.replace(/^#/, "") || "/";
   const route = routes.find((r) => r.pattern.test(path));
   document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === route?.nav));
+  journey(path);
   if (currentAbort) currentAbort.abort();
   currentAbort = new AbortController();
   clear(main);
