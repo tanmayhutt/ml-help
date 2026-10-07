@@ -133,26 +133,18 @@ def _leaderboard_summary(ranked: list[dict], task: str, scoring: str) -> list[st
     if not ok:
         return ["No model finished. Check the error notes."]
     best, worst = ok[0], ok[-1]
-    out = [f"{best['name']} won with {scoring} = {best['mean']:.4f} (plus or minus {best['std']:.4f} across folds)."]
-    fam = {}
-    for r in ok:
-        fam.setdefault(r["family"], []).append(r["mean"])
-    fam_rank = sorted(fam.items(), key=lambda kv: -max(kv[1]))
-    out.append("Best family: " + ", ".join(f"{f} ({max(v):.3f})" for f, v in fam_rank[:3]) + ".")
+    out = [f"{best['name']} scored best: {best['mean']:.3f}. Its score moved by about {best['std']:.3f} between test rounds, so treat small differences between models as a tie."]
     spread = best["mean"] - worst["mean"]
     if spread < 0.02:
-        out.append("All models land within 0.02 of each other. The data, not the algorithm, is the limit. Spend time on features rather than model choice.")
+        out.append("All the models score almost the same. The model choice does not matter much here; better columns would help more.")
     else:
-        out.append(f"The gap from best to worst is {spread:.3f}. Model choice matters on this data.")
+        out.append(f"The best and worst models are {spread:.3f} apart, so the choice of model matters for this data.")
     ens = [r for r in ok if r["family"] in ("bagging", "boosting")]
     single = [r for r in ok if r["family"] not in ("bagging", "boosting")]
     if ens and single and max(r["mean"] for r in ens) > max(r["mean"] for r in single):
-        out.append("Ensembles beat every single learner, which is the usual story on tabular data: averaging many trees cancels their individual mistakes.")
+        out.append("Models that combine many trees did best. That is common for tables: many trees voting together make fewer mistakes than one model.")
     elif ens and single:
-        out.append(f"A single learner ({single[0]['name']}) matched or beat the ensembles. The relationship is probably simple or close to linear.")
-    high_var = [r for r in ok if r["std"] > 0.05]
-    if high_var:
-        out.append(f"{high_var[0]['name']} varies a lot between folds (std {high_var[0]['std']:.3f}). With small data, a single train/test split would have been luck.")
+        out.append(f"A single simple model ({single[0]['name']}) did as well as the combined ones. The pattern in this data is probably simple.")
     return out
 
 

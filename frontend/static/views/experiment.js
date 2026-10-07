@@ -1,6 +1,6 @@
 // Predict a column: a linear flow. 1 pick column, 2 settings, 3 choose action, 4 result.
 import { api, cached } from "../api.js";
-import { el, clear, step, button, notice, table, select, field, details, codeBlock, metricTiles, narration, svgIcon, choices, fullCode, METRIC_NAMES } from "../ui.js";
+import { el, clear, step, button, notice, table, select, field, details, codeBlock, metricTiles, narration, svgIcon, choices, fullCode, METRIC_NAMES, score, append } from "../ui.js";
 import { barChart, lineChart, scatterChart, histogram, confusionMatrix } from "../charts.js";
 import { runJob } from "../jobrun.js";
 
@@ -25,10 +25,10 @@ export async function render(root, [id], signal) {
     const t = await api.task(id, v);
     S.task = t.task;
     const kindText = t.task === "classification" ? `"${v}" is a category, so the model will guess which group each row belongs to.` : `"${v}" is a number, so the model will guess a value for each row.`;
-    taskBox.append(notice("ok", kindText), t.alt ? el("div", { class: "row" }, el("span", { class: "muted small", text: "Wrong guess?" }), button(t.alt === "regression" ? "Treat it as a number" : "Treat it as a category", { kind: "small", onclick: () => { S.task = t.alt; buildStep2(); } })) : null);
+    append(taskBox, [notice("ok", kindText), t.alt ? el("div", { class: "row" }, el("span", { class: "muted small", text: "Wrong guess?" }), button(t.alt === "regression" ? "Treat it as a number" : "Treat it as a category", { kind: "small", onclick: () => { S.task = t.alt; buildStep2(); } })) : null]);
     buildStep2();
   });
-  root.append(step(1, "Which column should the model predict?", [
+  root.append(step(3, "Which column should the model predict?", [
     el("p", { class: "plain", text: "This is the answer column. The tool learns from the other columns to predict it." }),
     field("Column to predict", targetSel), taskBox]));
   root.append(s2, s3, s4);
@@ -43,7 +43,7 @@ export async function render(root, [id], signal) {
       field("Scale numbers", select([{ value: "standard", label: "yes, standard (recommended)" }, { value: "minmax", label: "yes, 0 to 1" }, { value: "robust", label: "yes, ignore outliers" }, { value: "none", label: "no" }], S.prep.scaler, (v) => (S.prep.scaler = v)), "Puts all number columns on the same scale so none dominates."),
       field("Text columns", select([{ value: "onehot", label: "one column per value (recommended)" }, { value: "ordinal", label: "replace with numbers" }], S.prep.encoder, (v) => (S.prep.encoder = v))));
     const dropChips = el("div", { class: "chips" }, cols.filter((c) => c.name !== S.target).map((c) => chip(c.name, S.prep.drop_columns.includes(c.name), (on) => { S.prep.drop_columns = on ? [...new Set([...S.prep.drop_columns, c.name])] : S.prep.drop_columns.filter((x) => x !== c.name); })));
-    s2.append(step(2, "Prepare the data", [
+    s2.append(step(4, "Prepare the data", [
       el("p", { class: "plain", text: "Blanks get filled, numbers get scaled, and text gets turned into numbers. The default settings work for most files." }),
       details("Change settings", opts),
       details("Leave some columns out (for example IDs or names)", dropChips),
@@ -55,7 +55,7 @@ export async function render(root, [id], signal) {
     clear(s3); clear(s4);
     const reg = catalog[S.task];
     const form = el("div");
-    s3.append(step(3, "What do you want to do?", [
+    s3.append(step(5, "What do you want to do?", [
       choices([
         { key: "race", icon: "play", title: "Find the best model", text: "Try every model and rank them. Start here." },
         { key: "train", icon: "flask", title: "Train one model", text: "Pick a model and see full results and charts." },
@@ -68,7 +68,7 @@ export async function render(root, [id], signal) {
   }
 
   function baseParams() { return { task: S.task, target: S.target, preprocess: S.prep }; }
-  function showResult(node) { clear(s4).append(step(4, "Result", node)); s4.scrollIntoView({ behavior: "smooth", block: "start" }); }
+  function showResult(node) { clear(s4).append(step(6, "Result", node)); s4.scrollIntoView({ behavior: "smooth", block: "start" }); }
 
   function raceForm(reg) {
     const chosen = new Set(reg.map((m) => m.key));
@@ -176,10 +176,10 @@ export async function render(root, [id], signal) {
       el("span", { class: i === 0 && x.status === "ok" ? "winner" : "" }, x.name), famName(x.family),
       x.status === "ok" ? x.mean.toFixed(4) : el("span", { class: "muted", text: x.status === "skipped" ? "skipped" : "failed" }),
       x.status === "ok" ? `± ${x.std.toFixed(4)}` : "", x.status === "ok" ? `${x.seconds}s` : (x.note || ""),
-      x.status === "ok" ? button("Train this", { kind: "small", onclick: () => { clear(s3); s3.append(step(3, `Train ${x.name}`, trainForm(reg, { model: x.key }))); s3.scrollIntoView({ behavior: "smooth" }); } }) : "",
+      x.status === "ok" ? button("Train this", { kind: "small", onclick: () => { clear(s3); s3.append(step(5, `Train ${x.name}`, trainForm(reg, { model: x.key }))); s3.scrollIntoView({ behavior: "smooth" }); } }) : "",
     ]);
     return [
-      ok.length ? el("p", { class: "big-answer", text: `Best model: ${ok[0].name} (${METRIC_NAMES[r.scoring] || r.scoring} ${ok[0].mean.toFixed(3)})` }) : null,
+      ok.length ? el("p", { class: "big-answer", text: `Best model: ${ok[0].name} (${METRIC_NAMES[r.scoring] || r.scoring} ${score(ok[0].mean)})` }) : null,
       r.subsampled ? notice("info", `To stay fast, this used ${r.rows_used.toLocaleString()} of your ${r.rows_total.toLocaleString()} rows. Train the winner to use all rows.`) : null,
       el("div", { class: "stack" }, r.summary.map((t) => el("p", { text: t }))),
       el("div", { class: "chart-wrap" }, barChart(items, { title: "Ranking" })),
@@ -197,8 +197,8 @@ export async function render(root, [id], signal) {
     const diagClass = diag.label === "good fit" ? "diag-good" : diag.label?.includes("overfit") ? "diag-mid" : "diag-bad";
     const verdict = { "good fit": "Good: the model works about as well on new rows as on the ones it learned from.", overfitting: "Careful: the model memorised its training rows and does worse on new ones.", "slight overfitting": "Mostly fine: a small drop on new rows.", underfitting: "Weak: the model is too simple for this data." }[diag.label] || diag.text;
     const parts = [
-      el("p", { class: "big-answer", text: `${r.model_name}: ${METRIC_NAMES[ev.primary] || ev.primary} ${ev.metrics[ev.primary]} on rows it never saw` }),
-      el("p", {}, el("strong", { class: diagClass, text: `${verdict} ` }), el("span", { class: "muted small", text: `(score on training rows ${ev.train_score}, on test rows ${ev.metrics[ev.primary]})` })),
+      el("p", { class: "big-answer", text: `${r.model_name}: ${METRIC_NAMES[ev.primary] || ev.primary} ${score(ev.metrics[ev.primary])} on rows it never saw` }),
+      el("p", {}, el("strong", { class: diagClass, text: `${verdict} ` }), el("span", { class: "muted small", text: `(training rows ${score(ev.train_score)}, test rows ${score(ev.metrics[ev.primary])})` })),
       metricTiles(ev.metrics, ev.how_to_read, ev.primary),
       el("p", { class: "muted small", text: "Hover a box to see what the number means." }),
     ];
@@ -227,7 +227,7 @@ export async function render(root, [id], signal) {
     const items = r.trials.filter((t) => t.mean !== null).map((t) => ({ label: Object.entries(t.params).map(([k, v]) => `${k}=${fmtv(v)}`).join(", "), value: t.mean, err: t.std }));
     items.push({ label: "default settings", value: r.baseline, color: "#9ca3af" });
     return [
-      el("p", { class: "big-answer", text: gain > 0.005 ? `Tuning improved ${r.model_name} from ${r.baseline.toFixed(3)} to ${best.mean.toFixed(3)}` : `Tuning did not help much: ${r.baseline.toFixed(3)} to ${best.mean.toFixed(3)}. The defaults were already good.` }),
+      el("p", { class: "big-answer", text: gain > 0.005 ? `Tuning improved ${r.model_name} from ${score(r.baseline)} to ${score(best.mean)}` : `Tuning did not help much: ${score(r.baseline)} to ${score(best.mean)}. The defaults were already good.` }),
       el("div", { class: "chart-wrap" }, barChart(items, { digits: 4 })),
       el("p", { class: "chart-note", text: "Each bar is one set of settings, best first. Grey is the untouched default." }),
       el("h4", { text: "Best settings" }), codeBlock(`best_params = ${JSON.stringify(best.params, null, 2)}`),

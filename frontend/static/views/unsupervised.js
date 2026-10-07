@@ -14,7 +14,7 @@ export async function render(root, [id], signal) {
 
   const s2 = el("div"), s3 = el("div");
   const dropChips = el("div", { class: "chips" }, cols.map((c) => chip(c.name, false, (on) => { S.prep.drop_columns = on ? [...new Set([...S.prep.drop_columns, c.name])] : S.prep.drop_columns.filter((x) => x !== c.name); })));
-  root.append(step(1, "Which columns should be used?", [
+  root.append(step(3, "Which columns should be used?", [
     el("p", { class: "plain", text: "All columns are used unless you untick them. Leave out IDs, names, and any answer column." }),
     dropChips,
     details("Settings", el("div", { class: "grid grid-3" }, field("Scale numbers", select([{ value: "standard", label: "yes (recommended)" }, { value: "none", label: "no" }], "standard", (v) => (S.prep.scaler = v))))),
@@ -23,14 +23,14 @@ export async function render(root, [id], signal) {
   function buildStep2() {
     clear(s2); clear(s3);
     const form = el("div");
-    s2.append(step(2, "What do you want to find?", [choices([
+    s2.append(step(4, "What do you want to find?", [choices([
       { key: "cluster", icon: "layers", title: "Groups of similar rows", text: "Rows that look alike are put in the same group." },
       { key: "reduce", icon: "scatter", title: "A 2D picture of the data", text: "Squeeze all columns into a dot plot you can look at." },
       { key: "anomaly", icon: "warn", title: "Unusual rows", text: "Find rows that do not look like the rest." },
     ], (k) => clear(form).append({ cluster: clusterForm, reduce: reduceForm, anomaly: anomalyForm }[k]())), form]));
     s2.scrollIntoView({ behavior: "smooth", block: "start" });
   }
-  function showResult(node) { clear(s3).append(step(3, "Result", node)); s3.scrollIntoView({ behavior: "smooth", block: "start" }); }
+  function showResult(node) { clear(s3).append(step(5, "Result", node)); s3.scrollIntoView({ behavior: "smooth", block: "start" }); }
 
   function clusterForm() {
     let algo = "kmeans", k = 3, eps = 0.5, ms = 5;

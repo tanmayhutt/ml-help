@@ -220,7 +220,10 @@ def predict(model_id: str, body: PredictIn) -> dict:
             df[f] = None
     df = df[feats]
     for c in df.columns:
-        df[c] = pd.to_numeric(df[c], errors="ignore") if df[c].dtype == object else df[c]
+        if df[c].dtype == object:
+            converted = pd.to_numeric(df[c], errors="coerce")
+            if converted.notna().sum() == df[c].notna().sum():
+                df[c] = converted
     try:
         pred = pipe.predict(df)
     except Exception as e:  # noqa: BLE001

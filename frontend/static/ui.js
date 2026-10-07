@@ -82,7 +82,7 @@ export function notice(kind, text) {
 export function codeBlock(code, lang = "python") {
   const pre = el("pre", { class: "code", dataset: { lang } }, el("code", { text: code }));
   const copy = button("Copy", { kind: "ghost small", icon: "code", onclick: () => { navigator.clipboard?.writeText(code); copy.querySelector("span").textContent = "Copied"; setTimeout(() => (copy.querySelector("span").textContent = "Copy"), 1200); } });
-  return el("div", { class: "code-wrap" }, pre, copy);
+  return el("div", { class: "code-wrap" }, el("div", { class: "code-bar" }, el("span", { class: "code-lang", text: lang }), copy), pre);
 }
 
 export function table(columns, rows, opts = {}) {
@@ -102,7 +102,7 @@ export function table(columns, rows, opts = {}) {
 
 export function fmt(v, digits = 4) {
   if (v === null || v === undefined) return el("span", { class: "muted", text: "null" });
-  if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(digits);
+  if (typeof v === "number") return Number.isInteger(v) ? String(v) : String(parseFloat(v.toFixed(digits)));
   if (typeof v === "boolean") return v ? "true" : "false";
   return String(v);
 }
@@ -207,7 +207,7 @@ export function fullCode(r) {
 // Numbered step card. `done` marks finished steps; `locked` greys out steps that are not reachable yet.
 export function step(n, title, body, opts = {}) {
   return el("section", { class: "card step " + (opts.locked ? "locked" : "") + (opts.done ? " done" : ""), id: opts.id || null },
-    el("header", { class: "card-head" }, el("span", { class: "step-n", text: n }), el("h3", { text: title }), opts.aside || null),
+    el("header", { class: "card-head" }, n !== "" && n !== null && n !== undefined ? el("span", { class: "step-n", text: n }) : null, el("h3", { text: title }), opts.aside || null),
     el("div", { class: "card-body" }, opts.locked ? el("p", { class: "muted", text: opts.lockedText || "Finish the step above first." }) : body));
 }
 
@@ -218,3 +218,6 @@ export function choices(items, onpick) {
     el("strong", {}, svgIcon(it.icon || "arrow", 18), it.title), el("span", { text: it.text }))));
   return wrap;
 }
+
+// Scores shown to people: 3 decimals, no trailing noise.
+export function score(v) { return v === null || v === undefined ? "–" : Number(v).toFixed(3); }

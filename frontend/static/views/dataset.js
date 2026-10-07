@@ -46,7 +46,7 @@ function columnCard(c) {
     el("div", { class: "row" }, el("strong", { text: c.name }), el("span", { class: "badge accent", text: type })),
     el("div", { class: "stat" }, el("span", { text: `${c.missing_pct}% blank` }), el("span", { text: `${c.unique} different values` })),
     flags.length ? el("div", { class: "chips" }, flags) : null,
-    c.hist ? histogram(c.hist, { height: 100 }) : null,
+    c.hist ? histogram(c.hist, { height: 90, mini: true }) : null,
     el("div", { class: "stat" }, stats.map((t) => el("span", { text: t }))));
 }
 

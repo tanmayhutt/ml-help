@@ -38,45 +38,46 @@ function axes(svg, x, y, xd, yd, m, w, h, opts = {}) {
     const yv = yd[0] + ((yd[1] - yd[0]) * i) / ticks;
     const yy = y(yv);
     g.append(s("line", { x1: m.l, x2: w - m.r, y1: yy, y2: yy, class: "grid" }));
-    g.append(s("text", { x: m.l - 6, y: yy + 4, "text-anchor": "end", class: "tick" }, nice(yv)));
+    g.append(s("text", { x: m.l - 8, y: yy + 4, "text-anchor": "end", class: "tick" }, nice(yv)));
   }
   for (let i = 0; i <= ticks; i++) {
     const xv = xd[0] + ((xd[1] - xd[0]) * i) / ticks;
-    g.append(s("text", { x: x(xv), y: h - m.b + 16, "text-anchor": "middle", class: "tick" }, opts.xfmt ? opts.xfmt(xv) : nice(xv)));
+    g.append(s("text", { x: x(xv), y: h - m.b + 18, "text-anchor": "middle", class: "tick" }, opts.xfmt ? opts.xfmt(xv) : nice(xv)));
   }
-  if (opts.xlabel) g.append(s("text", { x: (m.l + w - m.r) / 2, y: h - 4, "text-anchor": "middle", class: "axis-label" }, opts.xlabel));
+  if (opts.xlabel) g.append(s("text", { x: (m.l + w - m.r) / 2, y: h - 6, "text-anchor": "middle", class: "axis-label" }, opts.xlabel));
   if (opts.ylabel) g.append(s("text", { x: 12, y: (m.t + h - m.b) / 2, "text-anchor": "middle", transform: `rotate(-90 12 ${(m.t + h - m.b) / 2})`, class: "axis-label" }, opts.ylabel));
   svg.append(g);
 }
 
-// Horizontal bars: items [{label, value, color?, note?}]
+// Horizontal bars as plain HTML so labels stay readable at any width. items [{label, value, err?, color?, note?}]
 export function barChart(items, opts = {}) {
-  const w = 560, rowH = 26, m = { l: 190, r: 70, t: 8, b: 8 };
-  const h = m.t + m.b + rowH * items.length;
-  const svg = frame(w, h, opts.title);
-  const vals = items.map((i) => i.value ?? 0);
-  const lo = Math.min(0, ...vals), hi = Math.max(0.0001, ...vals);
-  const x = scale([lo, hi], [m.l, w - m.r]);
-  items.forEach((it, i) => {
-    const y = m.t + i * rowH;
-    const v = it.value ?? 0;
-    const g = s("g");
-    g.append(s("text", { x: m.l - 8, y: y + rowH / 2 + 4, "text-anchor": "end", class: "bar-label" }, it.label.length > 28 ? it.label.slice(0, 27) + "…" : it.label));
+  const wrap = document.createElement("div"); wrap.className = "hbars";
+  const vals = items.map((i) => i.value).filter((v) => v !== null && v !== undefined);
+  const lo = Math.min(0, ...vals), hi = Math.max(1e-9, ...vals);
+  const pct = (v) => ((v - lo) / (hi - lo)) * 100;
+  for (const it of items) {
+    const row = document.createElement("div"); row.className = "hbar-row";
+    const label = document.createElement("div"); label.className = "hbar-label"; label.textContent = it.label; label.title = it.label;
+    const track = document.createElement("div"); track.className = "hbar-track";
+    const val = document.createElement("div"); val.className = "hbar-value";
     if (it.value === null || it.value === undefined) {
-      g.append(s("text", { x: m.l + 4, y: y + rowH / 2 + 4, class: "tick" }, it.note || "skipped"));
+      val.textContent = it.note || "skipped"; val.classList.add("muted");
     } else {
-      g.append(s("rect", { x: x(Math.min(0, v)), y: y + 5, width: Math.abs(x(v) - x(0)), height: rowH - 10, rx: 3, fill: it.color || PALETTE[0], opacity: it.dim ? 0.35 : 0.9 }));
-      if (it.err) g.append(s("line", { x1: x(v - it.err), x2: x(v + it.err), y1: y + rowH / 2, y2: y + rowH / 2, class: "errbar" }));
-      g.append(s("text", { x: x(Math.max(0, v)) + 6, y: y + rowH / 2 + 4, class: "bar-value" }, v.toFixed(opts.digits ?? 3)));
+      const bar = document.createElement("div"); bar.className = "hbar";
+      bar.style.left = pct(Math.min(0, it.value)) + "%"; bar.style.width = Math.max(Math.abs(pct(it.value) - pct(0)), 0.5) + "%";
+      if (it.color) bar.style.background = it.color;
+      track.append(bar);
+      if (it.err) { const e = document.createElement("div"); e.className = "hbar-err"; e.style.left = pct(it.value - it.err) + "%"; e.style.width = Math.max(pct(it.value + it.err) - pct(it.value - it.err), 0.3) + "%"; track.append(e); }
+      val.textContent = it.value.toFixed(opts.digits ?? 3);
     }
-    svg.append(g);
-  });
-  return svg;
+    row.append(label, track, val); wrap.append(row);
+  }
+  return wrap;
 }
 
 // Lines: series [{name, points:[[x,y]], color?, band?:[[x,lo,hi]]}]
 export function lineChart(series, opts = {}) {
-  const w = 560, h = opts.height || 300, m = { l: 52, r: 16, t: 14, b: 40 };
+  const w = 560, h = opts.height || 300, m = { l: 56, r: 16, t: 16, b: 44 };
   const svg = frame(w, h, opts.title);
   const xs = series.flatMap((sr) => sr.points.map((p) => p[0]));
   const ys = series.flatMap((sr) => sr.points.map((p) => p[1]));
@@ -109,7 +110,7 @@ function legend(svg, items, xRight, yTop) {
 
 // Scatter: points [[x,y]], labels: parallel array of category strings or null
 export function scatterChart(points, labels, opts = {}) {
-  const w = 560, h = opts.height || 360, m = { l: 48, r: 16, t: 14, b: 36 };
+  const w = 560, h = opts.height || 360, m = { l: 56, r: 16, t: 16, b: 44 };
   const svg = frame(w, h, opts.title);
   if (!points.length) return svg;
   const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
@@ -126,12 +127,17 @@ export function scatterChart(points, labels, opts = {}) {
 
 // Histogram from {edges, counts}
 export function histogram(hist, opts = {}) {
-  const w = 560, h = opts.height || 180, m = { l: 44, r: 10, t: 10, b: 30 };
+  const mini = !!opts.mini;
+  const w = mini ? 300 : 560, h = opts.height || 180, m = mini ? { l: 4, r: 4, t: 4, b: 18 } : { l: 48, r: 10, t: 10, b: 36 };
   const svg = frame(w, h, opts.title);
   if (!hist || !hist.counts || !hist.counts.length) return svg;
   const xd = [hist.edges[0], hist.edges[hist.edges.length - 1]], yd = [0, Math.max(...hist.counts)];
   const x = scale(xd, [m.l, w - m.r]), y = scale(yd, [h - m.b, m.t]);
-  axes(svg, x, y, xd, yd, m, w, h, opts);
+  if (mini) {
+    svg.classList.add("chart-mini");
+    svg.append(s("text", { x: m.l, y: h - 4, class: "tick" }, nice(xd[0])));
+    svg.append(s("text", { x: w - m.r, y: h - 4, "text-anchor": "end", class: "tick" }, nice(xd[1])));
+  } else axes(svg, x, y, xd, yd, m, w, h, opts);
   hist.counts.forEach((c, i) => {
     const x0 = x(hist.edges[i]), x1 = x(hist.edges[i + 1]);
     svg.append(s("rect", { x: x0 + 0.5, y: y(c), width: Math.max(x1 - x0 - 1, 1), height: h - m.b - y(c), fill: opts.color || PALETTE[0], opacity: 0.85 }));

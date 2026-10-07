@@ -5,12 +5,12 @@ import pandas as pd
 from sklearn import datasets as skd
 
 SAMPLES = {
-    "iris": {"name": "Iris flowers", "task": "classification", "target": "species", "about": "150 flowers, 4 measurements, 3 species. The classic first classification dataset. Almost every model scores above 90%."},
-    "wine": {"name": "Wine cultivars", "task": "classification", "target": "cultivar", "about": "178 wines, 13 chemical measurements, 3 producers. Shows why scaling matters: features range from 0.1 to 1500."},
-    "breast_cancer": {"name": "Breast cancer diagnosis", "task": "classification", "target": "diagnosis", "about": "569 tumours, 30 cell measurements, benign or malignant. Good for precision versus recall discussions."},
-    "digits": {"name": "Handwritten digits", "task": "classification", "target": "digit", "about": "1797 tiny 8x8 images flattened to 64 pixels, 10 classes. Where SVM and KNN shine and PCA/t-SNE make pretty maps."},
-    "diabetes": {"name": "Diabetes progression", "task": "regression", "target": "progression", "about": "442 patients, 10 standardized features, a continuous disease score. Hard: the best R2 is about 0.5, which teaches humility."},
-    "california": {"name": "California housing (sample)", "task": "regression", "target": "median_house_value", "about": "A 5000-row sample of the 20640-row housing census. Nonlinear, where gradient boosting beats linear models clearly."},
+    "iris": {"name": "Iris flowers", "task": "classification", "target": "species", "about": "150 flowers, 4 measurements each, 3 species. The classic beginner file. Easy: most models score above 90%."},
+    "wine": {"name": "Wine cultivars", "task": "classification", "target": "cultivar", "about": "178 wines, 13 measurements, 3 producers. Shows why scaling matters: columns range from 0.1 to 1500."},
+    "breast_cancer": {"name": "Breast cancer diagnosis", "task": "classification", "target": "diagnosis", "about": "569 tumours, 30 measurements, harmless or harmful. A realistic yes/no problem."},
+    "digits": {"name": "Handwritten digits", "task": "classification", "target": "digit", "about": "1797 tiny images of handwritten digits, 64 pixel columns, 10 digits. Bigger and harder."},
+    "diabetes": {"name": "Diabetes progression", "task": "regression", "target": "progression", "about": "442 patients, 10 measurements, a disease score to predict. Hard: even the best model only explains about half of it."},
+    "california": {"name": "California housing (sample)", "task": "regression", "target": "median_house_value", "about": "5000 neighbourhoods with a house price to predict. Tree models beat straight-line models clearly here."},
 }
 
 

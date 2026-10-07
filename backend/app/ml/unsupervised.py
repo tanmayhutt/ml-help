@@ -42,9 +42,9 @@ def _points2d(Z, labels=None, max_points: int = 1500) -> dict:
 
 
 def cluster(df, params: dict, progress, deadline) -> dict:
-    algo = params.get("algorithm", "kmeans")
+    algo = params.get("algorithm") or "kmeans"
     X, Z, info, sub = _matrix(df, params, config.TRAIN_ROWS)
-    narration = [{"step": "Prepare", "text": f"{len(X)} rows, {Z.shape[1]} features after preprocessing. Scaling matters a lot here: clustering is all about distances, and an unscaled column with big numbers would dominate every distance.", "code": "Z = preprocessor.fit_transform(X)"}]
+    narration = [{"step": "Prepare", "text": f"{len(X)} rows and {Z.shape[1]} columns after preparing the data. Scaling matters here: grouping is based on distance between rows, and a column with big numbers would otherwise drown out the rest.", "code": "Z = preprocessor.fit_transform(X)"}]
     extra: dict = {}
     if algo == "kmeans":
         k = int(min(max(params.get("k", 3), 2), 20))
@@ -60,35 +60,40 @@ def cluster(df, params: dict, progress, deadline) -> dict:
         model = KMeans(n_clusters=k, n_init=10, random_state=config.RANDOM_STATE).fit(Z)
         labels = model.labels_
         extra = {"sweep": sweep, "suggested_k": best_k, "centers": model.cluster_centers_[:, :10].round(3).tolist()}
-        narration.append({"step": "Choose k", "text": f"The elbow plot shows inertia (within-cluster spread) falling as k grows; look for the bend. Silhouette peaks at k={best_k}, which is the data's own suggestion. You chose k={k}.", "code": f"KMeans(n_clusters={k}, n_init=10)"})
+        narration.append({"step": "How many groups", "text": f"The tool tried 2 to 10 groups. The elbow chart shows how tight the groups get as you add more; look for the bend. The silhouette chart peaks at {best_k} groups, which is the data's own suggestion. You asked for {k}.", "code": f"KMeans(n_clusters={k}, n_init=10)"})
     elif algo == "dbscan":
         eps = float(params.get("eps", 0.5)); ms = int(params.get("min_samples", 5))
         model = DBSCAN(eps=eps, min_samples=ms).fit(Z)
         labels = model.labels_
-        narration.append({"step": "Density", "text": f"eps={eps} is the neighbourhood radius and min_samples={ms} is how many neighbours make a core point. Rows that reach no core point are noise, label -1. If everything is noise, raise eps; if everything is one cluster, lower it.", "code": f"DBSCAN(eps={eps}, min_samples={ms})"})
+        narration.append({"step": "Crowded areas", "text": f"eps={eps} is how close two rows must be to count as neighbours, and min_samples={ms} is how many neighbours make a crowded spot. Rows with no crowded spot nearby get 'no group'. If everything is 'no group', raise eps; if everything is one group, lower it.", "code": f"DBSCAN(eps={eps}, min_samples={ms})"})
     elif algo == "agglomerative":
         k = int(min(max(params.get("k", 3), 2), 20))
         link = params.get("linkage", "ward") if params.get("linkage") in {"ward", "complete", "average", "single"} else "ward"
         model = AgglomerativeClustering(n_clusters=k, linkage=link).fit(Z)
         labels = model.labels_
-        narration.append({"step": "Merge", "text": f"Starting from {len(X)} singleton clusters, the closest pair merges repeatedly ({link} linkage decides what 'closest' means) until {k} remain.", "code": f"AgglomerativeClustering(n_clusters={k}, linkage='{link}')"})
+        narration.append({"step": "Merge", "text": f"Starting with {len(X)} groups of one row each, the two closest groups are merged again and again until {k} remain.", "code": f"AgglomerativeClustering(n_clusters={k}, linkage='{link}')"})
     elif algo == "gmm":
         k = int(min(max(params.get("k", 3), 2), 20))
         model = GaussianMixture(n_components=k, random_state=config.RANDOM_STATE).fit(Z)
         labels = model.predict(Z)
         extra = {"bic": round(float(model.bic(Z)), 2)}
-        narration.append({"step": "Mixture", "text": f"{k} Gaussian blobs are fitted by expectation-maximization. Unlike KMeans, each blob can be stretched, and each row has a soft membership. BIC = {extra['bic']:.1f}; lower BIC across different k means a better trade-off of fit and complexity.", "code": f"GaussianMixture(n_components={k})"})
+        narration.append({"step": "Blobs", "text": f"{k} stretchable blobs are fitted to the data. Each row gets a probability of belonging to each blob. BIC = {extra['bic']:.1f}: if you try other group counts, a lower BIC is better.", "code": f"GaussianMixture(n_components={k})"})
     else:
         raise ValueError(f"Unknown algorithm '{algo}'.")
     ev = evaluate.clustering(Z, labels)
     sizes = pd.Series(labels).value_counts().sort_index()
     return {"algorithm": algo, "explain": catalog.UNSUPERVISED_TEXT.get(algo, ""), "rows_used": len(X), "subsampled": sub,
             "evaluation": ev, "sizes": [{"label": int(i), "count": int(c)} for i, c in sizes.items()],
-            "points": _points2d(Z, np.asarray(labels)), "preprocessing": info, "narration": narration, **extra}
+            "points": _label_points(_points2d(Z, np.asarray(labels))), "preprocessing": info, "narration": narration, **extra}
+
+
+def _label_points(p: dict) -> dict:
+    p["labels"] = ["no group" if v == -1 else f"group {v}" for v in p["labels"]]
+    return p
 
 
 def reduce(df, params: dict, progress, deadline) -> dict:
-    algo = params.get("algorithm", "pca")
+    algo = params.get("algorithm") or "pca"
     X, Z, info, sub = _matrix(df, params, config.TRAIN_ROWS if algo == "pca" else config.EMBED_ROWS)
     color = None
     if params.get("color_by") in df.columns:
@@ -106,14 +111,14 @@ def reduce(df, params: dict, progress, deadline) -> dict:
             top = np.argsort(np.abs(comp))[::-1][:8]
             loadings.append([{"feature": str(names[i]) if i < len(names) else f"f{i}", "weight": round(float(comp[i]), 4)} for i in top])
         pts = {"xy": [[round(float(a), 4), round(float(b), 4)] for a, b in T[:1500, :2]], "labels": color[:1500] if color else None, "axis": "PC1 vs PC2"}
-        narration = [{"step": "PCA", "text": f"{catalog.UNSUPERVISED_TEXT['pca']} The first two components explain {cum[1]*100:.0f}% of the variance. The loadings table shows which original features each component is made of.", "code": f"PCA(n_components={n}).fit_transform(Z)"}]
+        narration = [{"step": "PCA", "text": f"{catalog.UNSUPERVISED_TEXT['pca']} The two new axes keep {cum[1]*100:.0f}% of the differences between rows. The bars show which original columns each axis is built from.", "code": f"PCA(n_components={n}).fit_transform(Z)"}]
         return {"algorithm": "pca", "explained": ratio, "cumulative": cum, "loadings": loadings, "points": pts, "rows_used": len(X), "preprocessing": info, "narration": narration}
     if algo == "tsne":
         perp = float(min(max(params.get("perplexity", 30), 5), min(50, len(X) - 1)))
         progress("Running t-SNE (this is the slow one)", 0.3)
         T = TSNE(n_components=2, perplexity=perp, random_state=0, init="pca", max_iter=500).fit_transform(Z)
         pts = {"xy": [[round(float(a), 4), round(float(b), 4)] for a, b in T], "labels": color, "axis": "t-SNE 1 vs t-SNE 2"}
-        narration = [{"step": "t-SNE", "text": f"{catalog.UNSUPERVISED_TEXT['tsne']} Perplexity {perp} roughly sets how many neighbours each point cares about. Capped at {config.EMBED_ROWS} rows.", "code": f"TSNE(n_components=2, perplexity={perp}, init='pca')"}]
+        narration = [{"step": "t-SNE", "text": f"{catalog.UNSUPERVISED_TEXT['tsne']} Only distances between nearby dots mean something; gaps between far groups do not. Limited to {config.EMBED_ROWS} rows.", "code": f"TSNE(n_components=2, perplexity={perp}, init='pca')"}]
         return {"algorithm": "tsne", "points": pts, "rows_used": len(X), "subsampled": sub, "preprocessing": info, "narration": narration}
     raise ValueError(f"Unknown algorithm '{algo}'.")
 
@@ -125,7 +130,7 @@ def _ct_from(df, X, params):
 
 
 def anomaly(df, params: dict, progress, deadline) -> dict:
-    algo = params.get("algorithm", "isoforest")
+    algo = params.get("algorithm") or "isoforest"
     contamination = float(min(max(params.get("contamination", 0.05), 0.005), 0.3))
     X, Z, info, sub = _matrix(df, params, config.TRAIN_ROWS)
     if algo == "isoforest":
@@ -142,6 +147,8 @@ def anomaly(df, params: dict, progress, deadline) -> dict:
     top = X.iloc[order].copy()
     top.insert(0, "_score", np.round(score[order], 4))
     rows = top.astype(object).where(top.notna(), None).values.tolist()
-    narration = [{"step": "Detect", "text": f"{catalog.UNSUPERVISED_TEXT[algo]} contamination={contamination} tells the model to flag roughly {contamination*100:.1f}% of rows.", "code": f"{'IsolationForest' if algo == 'isoforest' else 'LocalOutlierFactor'}(contamination={contamination})"}]
+    narration = [{"step": "Detect", "text": f"{catalog.UNSUPERVISED_TEXT[algo]} The model was told to flag roughly {contamination*100:.0f}% of rows.", "code": f"{'IsolationForest' if algo == 'isoforest' else 'LocalOutlierFactor'}(contamination={contamination})"}]
+    pts = _points2d(Z, flag.astype(int))
+    pts["labels"] = ["unusual" if v else "normal" for v in pts["labels"]]
     return {"algorithm": algo, "flagged": int(flag.sum()), "rows_used": len(X), "subsampled": sub, "columns": list(top.columns), "top": rows,
-            "points": _points2d(Z, flag.astype(int)), "preprocessing": info, "narration": narration}
+            "points": pts, "preprocessing": info, "narration": narration}
