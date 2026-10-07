@@ -1,5 +1,6 @@
 import { api } from "../api.js";
 import { el, clear, card, button, notice, table, select, field, codeBlock, svgIcon, timeAgo, spinner } from "../ui.js";
+import { tryModelPanel } from "../trymodel.js";
 
 export async function render(root, [id]) {
   const [ds, models] = await Promise.all([api.dataset(id), api.models(id)]);
@@ -15,14 +16,7 @@ export async function render(root, [id]) {
   async function refresh() {
     clear(body); clear(out);
     const m = models.find((x) => x.id === sel.value);
-    const feats = m.features.features;
-    const inputs = {};
-    const form = el("div", { class: "grid grid-3" }, feats.map((f) => { const inp = el("input", { type: "text", placeholder: f }); inputs[f] = inp; return field(f, inp); }));
-    const runOne = button("Predict", { kind: "primary", icon: "target", onclick: async () => {
-      const row = {}; for (const f of feats) { const v = inputs[f].value.trim(); row[f] = v === "" ? null : isNaN(Number(v)) ? v : Number(v); }
-      clear(out).append(spinner("Predicting"));
-      try { clear(out).append(predictions(await api.predict(m.id, [row]), m)); } catch (e) { clear(out).append(notice("error", e.message)); }
-    } });
+    const panel = await tryModelPanel(m.id, { compact: true });
     const file = el("input", { type: "file", accept: ".csv,.tsv,.xlsx", onchange: async () => {
       if (!file.files[0]) return; clear(out).append(spinner("Predicting file"));
       try { clear(out).append(predictions(await api.predictFile(m.id, file.files[0]), m)); } catch (e) { clear(out).append(notice("error", e.message)); }
@@ -32,7 +26,7 @@ export async function render(root, [id]) {
       el("div", { class: "row" },
         el("a", { class: "btn", href: `/api/models/${m.id}/download`, download: "" }, svgIcon("download"), el("span", { text: "Download .joblib" })),
         el("a", { class: "btn", href: `/api/models/${m.id}/notebook`, download: "" }, svgIcon("book"), el("span", { text: "Download notebook" }))),
-      el("h4", { text: "Type one row" }), form, runOne,
+      el("h4", { text: "Type one row" }), panel,
       el("h4", { text: "Or upload a file of rows" }), field("CSV or Excel with the same columns", file, "The first 500 rows are predicted."),
       el("h4", { text: "Use it in your own Python" }), codeBlock(`import joblib\npipe = joblib.load('mlhelp-${m.id}.joblib')\npipe.predict(new_rows_dataframe)\n\n# the estimator inside:\n${code}`));
   }

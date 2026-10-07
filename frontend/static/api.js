@@ -37,6 +37,7 @@ export const api = {
   job: (id) => request("GET", `/jobs/${id}`),
   jobs: (dataset_id) => request("GET", "/jobs" + (dataset_id ? `?dataset_id=${dataset_id}` : "")),
   models: (dataset_id) => request("GET", "/models" + (dataset_id ? `?dataset_id=${dataset_id}` : "")),
+  model: (id) => request("GET", `/models/${id}`),
   predict: (id, rows) => request("POST", `/models/${id}/predict`, { rows }),
   predictFile: (id, file) => { const f = new FormData(); f.append("file", file); return request("POST", `/models/${id}/predict-file`, f, true); },
   modelCode: (id) => request("GET", `/models/${id}/code`),

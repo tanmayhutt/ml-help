@@ -2,9 +2,15 @@ import { api, cached } from "../api.js";
 import { el, step, button, notice, table, svgIcon, bytes, timeAgo, toast, spinner, clear } from "../ui.js";
 
 export async function render(root) {
-  root.append(el("div", { class: "page-head" }, el("div", { class: "grow" },
+  root.append(el("section", { class: "hero" },
     el("h1", { text: "Find the best model for your data" }),
-    el("p", { text: "Three steps: add a file, pick what to predict, press run. You get the best models, clear results, and the Python code." }))));
+    el("p", { text: "Add a table, pick the column to predict, press one button. Every scikit-learn model is tested, the best ones are combined, and you get a clear winner you can try right away, with the full Python code." }),
+    el("div", { class: "hero-steps" },
+      el("span", { class: "hero-step" }, el("b", { text: "1" }), "Add your data"),
+      el("span", { class: "hero-step" }, el("b", { text: "2" }), "Understand and clean it"),
+      el("span", { class: "hero-step" }, el("b", { text: "3" }), "Pick what to predict"),
+      el("span", { class: "hero-step" }, el("b", { text: "4" }), "Find the best model"),
+      el("span", { class: "hero-step" }, el("b", { text: "5" }), "Try it on new values"))));
 
   const [health, samplesList, list] = await Promise.all([api.health(), cached("samples"), api.datasets()]);
   const L = health.limits;

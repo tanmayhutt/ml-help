@@ -212,6 +212,30 @@ def list_models(dataset_id: str | None = None) -> list:
     return out
 
 
+@router.get("/models/{model_id}")
+def get_model(model_id: str) -> dict:
+    """One saved model plus the input schema a form needs: column types, typical values, and choices."""
+    with db.connect() as con:
+        m = _model_row(con, model_id)
+        ds = db.row_to_dict(con.execute("SELECT id, name, profile FROM datasets WHERE id = ?", (m["dataset_id"],)).fetchone(), ("profile",))
+    feats = m["features"]
+    cols = {c["name"]: c for c in ((ds or {}).get("profile") or {}).get("columns", [])}
+    dropped = set((feats.get("prep_options") or {}).get("drop_columns") or [])
+    inputs = []
+    for name in feats.get("features", []):
+        c = cols.get(name, {})
+        if name in dropped or c.get("looks_id") or c.get("type") == "datetime":
+            continue
+        if c.get("type") == "numeric":
+            inputs.append({"name": name, "kind": "number", "default": c.get("median"), "min": c.get("min"), "max": c.get("max")})
+        else:
+            choices = [t["value"] for t in (c.get("top") or []) if t["value"] not in ("None", "nan")]
+            inputs.append({"name": name, "kind": "choice" if choices else "text", "choices": choices, "default": choices[0] if choices else ""})
+    return {"id": m["id"], "name": m["name"], "task": m["task"], "target": m["target"], "metrics": m["metrics"], "created": m["created"],
+            "dataset_id": m["dataset_id"], "dataset_name": (ds or {}).get("name"), "classes": feats.get("classes"), "inputs": inputs,
+            "file_exists": storage.model_path(model_id).exists()}
+
+
 class PredictIn(BaseModel):
     rows: list[dict[str, Any]] = Field(max_length=500)
 

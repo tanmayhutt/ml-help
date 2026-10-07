@@ -3,6 +3,7 @@ import { api, cached } from "../api.js";
 import { el, clear, step, button, notice, table, select, field, details, codeBlock, metricTiles, narration, svgIcon, choices, fullCode, METRIC_NAMES, score, append } from "../ui.js";
 import { barChart, lineChart, scatterChart, histogram, confusionMatrix } from "../charts.js";
 import { runJob } from "../jobrun.js";
+import { tryModelPanel } from "../trymodel.js";
 
 const state = {};
 
@@ -222,10 +223,14 @@ export async function render(root, [id], signal) {
     }
     if (ev.importance) charts.push(chartCard("Which columns matter most", barChart(ev.importance.items.map((i) => ({ label: i.feature, value: i.value })), { digits: 4 }), ev.importance.note));
     parts.push(el("div", { class: "grid grid-2" }, charts));
-    if (r.model_id) parts.push(el("div", { class: "row" },
-      el("a", { class: "btn primary", href: `#/dataset/${id}/predict` }, svgIcon("target"), el("span", { text: "Use this model on new rows" })),
-      el("a", { class: "btn", href: `/api/models/${r.model_id}/download`, download: "" }, svgIcon("download"), el("span", { text: "Download model" })),
-      el("a", { class: "btn", href: `/api/models/${r.model_id}/notebook`, download: "" }, svgIcon("book"), el("span", { text: "Download notebook" }))));
+    if (r.model_id) {
+      const slot = el("div", { class: "try-slot" }, el("h4", { text: "Try it: enter values and get a prediction" }));
+      tryModelPanel(r.model_id, { compact: true }).then((p) => slot.append(p));
+      parts.push(slot, el("div", { class: "row" },
+        el("a", { class: "btn", href: `/api/models/${r.model_id}/download`, download: "" }, svgIcon("download"), el("span", { text: "Download model" })),
+        el("a", { class: "btn", href: `/api/models/${r.model_id}/notebook`, download: "" }, svgIcon("book"), el("span", { text: "Download notebook" })),
+        el("a", { class: "btn", href: `#/dataset/${id}/predict` }, svgIcon("upload"), el("span", { text: "Predict a whole file" }))));
+    }
     parts.push(details("How this was done, step by step", narration(r.narration), true));
     if (r.models_tried) parts.push(details("Every model that was tried, and how each one was set up", el("div", { class: "stack" }, r.models_tried.map((m) => el("div", { class: "col-card" },
       el("div", { class: "row" }, el("strong", { text: m.name }), el("span", { class: "badge", text: famName(m.family) }), m.mean !== null && m.mean !== undefined ? el("span", { class: "badge ok", text: score(m.mean) }) : el("span", { class: "badge", text: m.status })),
@@ -281,10 +286,14 @@ export async function render(root, [id], signal) {
     }
     if (ev.importance) charts.push(chartCard("Which columns matter most", barChart(ev.importance.items.map((i) => ({ label: i.feature, value: i.value })), { digits: 4 }), ev.importance.note));
     parts.push(el("div", { class: "grid grid-2" }, charts));
-    if (r.model_id) parts.push(el("div", { class: "row" },
-      el("a", { class: "btn primary", href: `#/dataset/${id}/predict` }, svgIcon("target"), el("span", { text: "Use this model on new rows" })),
-      el("a", { class: "btn", href: `/api/models/${r.model_id}/download`, download: "" }, svgIcon("download"), el("span", { text: "Download model" })),
-      el("a", { class: "btn", href: `/api/models/${r.model_id}/notebook`, download: "" }, svgIcon("book"), el("span", { text: "Download notebook" }))));
+    if (r.model_id) {
+      const slot = el("div", { class: "try-slot" }, el("h4", { text: "Try it: enter values and get a prediction" }));
+      tryModelPanel(r.model_id, { compact: true }).then((p) => slot.append(p));
+      parts.push(slot, el("div", { class: "row" },
+        el("a", { class: "btn", href: `/api/models/${r.model_id}/download`, download: "" }, svgIcon("download"), el("span", { text: "Download model" })),
+        el("a", { class: "btn", href: `/api/models/${r.model_id}/notebook`, download: "" }, svgIcon("book"), el("span", { text: "Download notebook" })),
+        el("a", { class: "btn", href: `#/dataset/${id}/predict` }, svgIcon("upload"), el("span", { text: "Predict a whole file" }))));
+    }
     parts.push(details("How this was done, step by step", narration(r.narration), true), details("How the data was prepared", prepSteps(r.preprocessing)), fullCode(r));
     return parts;
   }

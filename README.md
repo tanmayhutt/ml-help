@@ -21,7 +21,8 @@ ML Help walks you through machine learning in numbered steps. Every result comes
 - Combines models: voting, stacking, and bagging ensembles built from any members you pick.
 - Fine-tunes a model with random search over its hyperparameters.
 - Checks whether more data would help with a learning curve.
-- Saves every trained model so you can predict new rows, download the model, or download a notebook.
+- Try the winner right away: a form with typed inputs and sensible defaults appears under every result, with confidence bars for each answer. Each model also has its own shareable page.
+- Saves every trained model so you can predict a whole file, download the model, or download a notebook.
 
 **Find groups or odd rows** (no target column)
 
