@@ -39,6 +39,8 @@ def prepare(df: pd.DataFrame, target: str, task: str, prep_options: dict | None)
     if target not in df.columns:
         raise ValueError(f"Target column '{target}' not found.")
     data = df[df[target].notna()].copy()
+    if preprocess.normalize(prep_options).get("drop_duplicates"):
+        data = data.drop_duplicates()
     X = data.drop(columns=[target])
     y = data[target]
     if task == "classification":
@@ -421,7 +423,11 @@ def auto(df, params: dict, progress: Progress, deadline: float) -> dict:
     if simple and simple["key"] != best.get("key"):
         verdict.append(f"{simple['name']} scores almost the same ({simple['mean']:.3f}) and is simpler and faster. Prefer it if you need to explain the model.")
     verdict.append(f"Final check on rows the model never saw: {final['evaluation']['primary']} {final['evaluation']['metrics'][final['evaluation']['primary']]:.3f}.")
+    tried = [{"name": reg[r["key"]]["name"], "family": reg[r["key"]]["family"], "explain": reg[r["key"]]["explain"], "code": f"{reg[r['key']]['make']().__class__.__name__}({_fmt_params(reg[r['key']]['make'](), reg[r['key']])})", "mean": r.get("mean"), "status": r["status"]}
+             for r in race["leaderboard"] if r["key"] in reg]
     narration = race["narration"] + [
+        {"step": "The loop", "text": f"Every model is built the same way: a pipeline that first prepares the data and then fits the model. The code loops over the shelf, runs cross-validation for each one, and keeps the scores in a table. Nothing is special about any model in the loop; they all see exactly the same prepared rows and the same {folds} test rounds, which is what makes the ranking fair.", "code": "for name, model in models.items():\n    pipe = Pipeline([('prep', preprocessor), ('model', model)])\n    scores = cross_val_score(pipe, X, y, cv=cv, scoring='" + scoring + "')\n    results[name] = (scores.mean(), scores.std())"},
+        {"step": "What an ensemble is", "text": "Cross-validation only measures a model. An ensemble is a new model made by combining several models. Voting: each member predicts, and the answers are averaged (for numbers) or the most confident class wins (for categories). Stacking: the members predict, and a small final model learns how much to trust each member. Bagging and boosting (Random Forest, Gradient Boosting) are ensembles of many trees built inside one model. Combining helps when the members make different mistakes.", "code": "VotingClassifier([('a', m1), ('b', m2), ('c', m3)], voting='soft')\nStackingClassifier([('a', m1), ('b', m2), ('c', m3)], final_estimator=LogisticRegression())"},
         {"step": "Ensembles", "text": f"The top three models ({', '.join(reg[k]['name'] for k in top)}) were combined two ways: voting, where they average their answers, and stacking, where a small final model learns how much to trust each one. Both were scored with the same {folds}-part cross-validation.", "code": f"VotingClassifier([...], voting='soft'); StackingClassifier([...], cv=3)" if task == "classification" else "VotingRegressor([...]); StackingRegressor([...], cv=3)"},
         {"step": "Winner", "text": f"{best['name']} had the best cross-validated {scoring} ({best['mean']:.4f}). It was then trained once more with 20% of the rows hidden, to produce the charts below and a saved model you can use.", "code": "pipe.fit(X_train, y_train)"},
     ]
@@ -429,6 +435,6 @@ def auto(df, params: dict, progress: Progress, deadline: float) -> dict:
         "task": task, "target": target, "scoring": scoring, "folds": folds, "rows_used": race["rows_used"], "rows_total": race["rows_total"], "subsampled": race["subsampled"],
         "leaderboard": everything + [r for r in race["leaderboard"] if r["status"] != "ok"] + [e for e in ensembles if e["status"] != "ok"],
         "best": {"name": best["name"], "mean": best["mean"], "std": best.get("std"), "family": best["family"], "spec": best_spec},
-        "verdict": verdict, "final": {k: v for k, v in final.items() if k not in ("narration", "preprocessing", "_pipeline", "code")},
+        "verdict": verdict, "final": {k: v for k, v in final.items() if k not in ("narration", "preprocessing", "_pipeline", "code")}, "models_tried": tried,
         "model_id": None, "_pipeline": final.get("_pipeline"), "preprocessing": race["preprocessing"], "narration": narration,
     }

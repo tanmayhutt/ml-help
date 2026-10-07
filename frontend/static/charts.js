@@ -11,6 +11,7 @@ function s(tag, attrs = {}, text) {
 
 function frame(w, h, title) {
   const svg = s("svg", { viewBox: `0 0 ${w} ${h}`, class: "chart", role: "img", "aria-label": title || "chart" });
+  svg.style.maxWidth = w + "px";
   if (title) svg.append(s("title", {}, title));
   return svg;
 }
@@ -134,7 +135,7 @@ export function histogram(hist, opts = {}) {
   const xd = [hist.edges[0], hist.edges[hist.edges.length - 1]], yd = [0, Math.max(...hist.counts)];
   const x = scale(xd, [m.l, w - m.r]), y = scale(yd, [h - m.b, m.t]);
   if (mini) {
-    svg.classList.add("chart-mini");
+    svg.classList.add("chart-mini"); svg.style.maxWidth = "";
     svg.append(s("text", { x: m.l, y: h - 4, class: "tick" }, nice(xd[0])));
     svg.append(s("text", { x: w - m.r, y: h - 4, "text-anchor": "end", class: "tick" }, nice(xd[1])));
   } else axes(svg, x, y, xd, yd, m, w, h, opts);
@@ -186,3 +187,21 @@ export function heatmap(columns, matrix) {
 }
 
 export { PALETTE };
+
+// Horizontal box plot from {min, q1, median, q3, max, outliers}
+export function boxPlot(box, opts = {}) {
+  const w = 300, h = 46, m = { l: 6, r: 6 };
+  const svg = frame(w, h, opts.title); svg.classList.add("chart-mini"); svg.style.maxWidth = "";
+  const vals = [box.min, box.max, ...(box.outliers || [])].filter((v) => v !== null && v !== undefined);
+  const xd = [Math.min(...vals), Math.max(...vals)]; if (xd[0] === xd[1]) xd[1] += 1;
+  const x = scale(xd, [m.l, w - m.r]); const y = 16;
+  svg.append(s("line", { x1: x(box.min), x2: x(box.q1), y1: y, y2: y, stroke: "currentColor", "stroke-width": 1.5, opacity: 0.6 }));
+  svg.append(s("line", { x1: x(box.q3), x2: x(box.max), y1: y, y2: y, stroke: "currentColor", "stroke-width": 1.5, opacity: 0.6 }));
+  svg.append(s("rect", { x: x(box.q1), y: y - 9, width: Math.max(x(box.q3) - x(box.q1), 1), height: 18, fill: PALETTE[0], opacity: 0.35, rx: 2 }));
+  svg.append(s("line", { x1: x(box.median), x2: x(box.median), y1: y - 9, y2: y + 9, stroke: PALETTE[0], "stroke-width": 2 }));
+  [box.min, box.max].forEach((v) => svg.append(s("line", { x1: x(v), x2: x(v), y1: y - 5, y2: y + 5, stroke: "currentColor", "stroke-width": 1.5, opacity: 0.6 })));
+  (box.outliers || []).forEach((v) => svg.append(s("circle", { cx: x(v), cy: y, r: 2.2, fill: "#dc2626", opacity: 0.8 })));
+  svg.append(s("text", { x: m.l, y: h - 4, class: "tick" }, nice(xd[0])));
+  svg.append(s("text", { x: w - m.r, y: h - 4, "text-anchor": "end", class: "tick" }, nice(xd[1])));
+  return svg;
+}

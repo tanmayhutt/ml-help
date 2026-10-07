@@ -8,7 +8,11 @@ const state = {};
 
 export async function render(root, [id], signal) {
   const [ds, catalog] = await Promise.all([api.dataset(id), cached("catalog")]);
-  const S = state[id] = state[id] || { target: null, task: null, prep: { num_impute: "median", cat_impute: "most_frequent", scaler: "standard", encoder: "onehot", drop_columns: [] }, lastRace: null };
+  let planOpts = null;
+  try { const raw = sessionStorage.getItem(`mlhelp.plan.${id}`); if (raw) { planOpts = JSON.parse(raw); sessionStorage.removeItem(`mlhelp.plan.${id}`); } } catch {}
+  const recommended = planOpts || ds.profile.cleaning?.options || {};
+  const S = state[id] = state[id] || { target: null, task: null, prep: { num_impute: "median", cat_impute: "most_frequent", scaler: "standard", encoder: "onehot", drop_columns: [], drop_duplicates: false, outliers: "none", log_skewed: false, ...recommended }, lastRace: null };
+  if (planOpts) { S.prep = { ...S.prep, ...planOpts }; S.planApplied = true; }
   const cols = ds.profile.columns;
 
   root.append(el("div", { class: "page-head" }, el("div", { class: "grow" },
@@ -46,7 +50,10 @@ export async function render(root, [id], signal) {
       field("Blank numbers", select([{ value: "median", label: "fill with the middle value" }, { value: "mean", label: "fill with the average" }, { value: "most_frequent", label: "fill with the most common" }, { value: "constant", label: "fill with 0" }], S.prep.num_impute, (v) => (S.prep.num_impute = v))),
       field("Blank text", select([{ value: "most_frequent", label: "fill with the most common" }, { value: "constant", label: "fill with 'missing'" }], S.prep.cat_impute, (v) => (S.prep.cat_impute = v))),
       field("Scale numbers", select([{ value: "standard", label: "yes, standard (recommended)" }, { value: "minmax", label: "yes, 0 to 1" }, { value: "robust", label: "yes, ignore outliers" }, { value: "none", label: "no" }], S.prep.scaler, (v) => (S.prep.scaler = v)), "Puts all number columns on the same scale so none dominates."),
-      field("Text columns", select([{ value: "onehot", label: "one column per value (recommended)" }, { value: "ordinal", label: "replace with numbers" }], S.prep.encoder, (v) => (S.prep.encoder = v))));
+      field("Text columns", select([{ value: "onehot", label: "one column per value (recommended)" }, { value: "ordinal", label: "replace with numbers" }], S.prep.encoder, (v) => (S.prep.encoder = v))),
+      field("Duplicate rows", select([{ value: "1", label: "remove them" }, { value: "0", label: "keep them" }], S.prep.drop_duplicates ? "1" : "0", (v) => (S.prep.drop_duplicates = v === "1"))),
+      field("Outliers", select([{ value: "cap", label: "cap extreme values" }, { value: "none", label: "leave as is" }], S.prep.outliers, (v) => (S.prep.outliers = v)), "Pulls values beyond 1.5 times the middle range back to the edge."),
+      field("Long-tailed columns", select([{ value: "1", label: "log-transform them" }, { value: "0", label: "leave as is" }], S.prep.log_skewed ? "1" : "0", (v) => (S.prep.log_skewed = v === "1")), "Squashes a long tail of big values."));
     const dropChips = el("div", { class: "chips" }, cols.filter((c) => c.name !== S.target).map((c) => chip(c.name, S.prep.drop_columns.includes(c.name), (on) => { S.prep.drop_columns = on ? [...new Set([...S.prep.drop_columns, c.name])] : S.prep.drop_columns.filter((x) => x !== c.name); })));
     const host = el("div");
     const run = button("Find the best model", { kind: "primary big", icon: "play", onclick: async () => {
@@ -54,9 +61,10 @@ export async function render(root, [id], signal) {
       try { const job = await runJob("auto", id, baseParams(), host, signal); S.lastRace = job.result; showResult(autoResult(job.result)); }
       catch {} finally { run.disabled = false; }
     } });
+    const planNote = S.planApplied ? notice("ok", "The cleaning plan from the data page is applied: " + planSummary(S.prep) + ".") : (Object.keys(recommended).length ? notice("info", "Recommended cleaning is applied automatically: " + planSummary(S.prep) + ". Change it below if you want.") : null);
     s2.append(step(4, "Find the best model", [
       el("p", { class: "plain", text: "One click. Every model on the shelf is tested on your data, the best ones are combined, and you get a clear winner with charts, a saved model, and the code." }),
-      run, host,
+      planNote, run, host,
       details("Change how the data is prepared (optional)", [el("p", { class: "muted small", text: "Blanks get filled, numbers get scaled, and text gets turned into numbers. The defaults work for most files." }), opts]),
       details("Leave some columns out (for example IDs or names)", dropChips),
     ]));
@@ -218,7 +226,11 @@ export async function render(root, [id], signal) {
       el("a", { class: "btn primary", href: `#/dataset/${id}/predict` }, svgIcon("target"), el("span", { text: "Use this model on new rows" })),
       el("a", { class: "btn", href: `/api/models/${r.model_id}/download`, download: "" }, svgIcon("download"), el("span", { text: "Download model" })),
       el("a", { class: "btn", href: `/api/models/${r.model_id}/notebook`, download: "" }, svgIcon("book"), el("span", { text: "Download notebook" }))));
-    parts.push(details("How this was done, step by step", narration(r.narration), true), details("How the data was prepared", prepSteps(r.preprocessing)), fullCode(r));
+    parts.push(details("How this was done, step by step", narration(r.narration), true));
+    if (r.models_tried) parts.push(details("Every model that was tried, and how each one was set up", el("div", { class: "stack" }, r.models_tried.map((m) => el("div", { class: "col-card" },
+      el("div", { class: "row" }, el("strong", { text: m.name }), el("span", { class: "badge", text: famName(m.family) }), m.mean !== null && m.mean !== undefined ? el("span", { class: "badge ok", text: score(m.mean) }) : el("span", { class: "badge", text: m.status })),
+      el("p", { class: "small", text: m.explain }), codeBlock(m.code))))));
+    parts.push(details("How the data was prepared", prepSteps(r.preprocessing)), fullCode(r));
     const bestKey = ok.find((x) => x.family !== "ensemble")?.key;
     const wrap = el("div", {}, ...parts);
     setTimeout(() => s4.append(nextSteps(reg, bestKey)), 0);
@@ -304,6 +316,18 @@ export async function render(root, [id], signal) {
       details("How this was done, step by step", narration(r.narration)), fullCode(r),
     ];
   }
+}
+
+function planSummary(prep) {
+  const bits = [];
+  if (prep.drop_columns?.length) bits.push(`leave out ${prep.drop_columns.join(", ")}`);
+  if (prep.drop_duplicates) bits.push("remove duplicates");
+  bits.push(`fill blanks (${prep.num_impute === "median" ? "median" : prep.num_impute.replace("_", " ")})`);
+  if (prep.outliers === "cap") bits.push("cap outliers");
+  if (prep.log_skewed) bits.push("log-transform long tails");
+  bits.push(prep.encoder === "onehot" ? "one-hot encode text" : "number-code text");
+  if (prep.scaler !== "none") bits.push("scale numbers");
+  return bits.join(", ");
 }
 
 function chartCard(title, chart, note) { return el("div", { class: "col-card" }, el("h4", { text: title }), chart, el("p", { class: "chart-note", text: note })); }

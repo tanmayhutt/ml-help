@@ -17,6 +17,8 @@ from . import catalog, evaluate, preprocess
 def _matrix(df: pd.DataFrame, params: dict, max_rows: int):
     cols = params.get("columns") or list(df.columns)
     X = df[[c for c in cols if c in df.columns]]
+    if preprocess.normalize(params.get("preprocess")).get("drop_duplicates"):
+        X = X.drop_duplicates()
     X, _, sub = preprocess.subsample(X, None, max_rows, False)
     ct, info = preprocess.build(X, params.get("preprocess"))
     Z = ct.fit_transform(X)

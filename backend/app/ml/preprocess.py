@@ -3,16 +3,41 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (
+    FunctionTransformer,
     MinMaxScaler,
     OneHotEncoder,
     OrdinalEncoder,
     RobustScaler,
     StandardScaler,
 )
+
+
+class Winsorizer(BaseEstimator, TransformerMixin):
+    """Cap values outside [Q1 - k*IQR, Q3 + k*IQR]. Limits are learned on training rows only."""
+
+    def __init__(self, k: float = 1.5):
+        self.k = k
+
+    def fit(self, X, y=None):
+        X = np.asarray(X, dtype=float)
+        q1 = np.nanpercentile(X, 25, axis=0)
+        q3 = np.nanpercentile(X, 75, axis=0)
+        iqr = q3 - q1
+        self.lower_ = q1 - self.k * iqr
+        self.upper_ = q3 + self.k * iqr
+        return self
+
+    def transform(self, X):
+        X = np.asarray(X, dtype=float)
+        return np.clip(X, self.lower_, self.upper_)
+
+    def get_feature_names_out(self, input_features=None):
+        return np.asarray(input_features) if input_features is not None else None
 
 NUM_IMPUTE = {"mean", "median", "most_frequent", "constant"}
 CAT_IMPUTE = {"most_frequent", "constant"}
@@ -26,6 +51,10 @@ DEFAULTS = {
     "encoder": "onehot",
     "drop_high_cardinality": 50,
     "drop_columns": [],
+    "drop_duplicates": False,
+    "outliers": "none",      # none | cap
+    "log_skewed": False,     # log1p on skewed, non-negative numeric columns
+    "skew_threshold": 1.0,
 }
 
 
@@ -42,6 +71,10 @@ def normalize(options: dict | None) -> dict:
         o["encoder"] = "onehot"
     o["drop_high_cardinality"] = int(o["drop_high_cardinality"] or 0)
     o["drop_columns"] = [str(c) for c in (o["drop_columns"] or [])]
+    o["drop_duplicates"] = bool(o["drop_duplicates"])
+    o["outliers"] = o["outliers"] if o["outliers"] in ("none", "cap") else "none"
+    o["log_skewed"] = bool(o["log_skewed"])
+    o["skew_threshold"] = float(o["skew_threshold"] or 1.0)
     return o
 
 
@@ -76,16 +109,31 @@ def split_columns(X: pd.DataFrame, options: dict) -> dict:
             dropped.append({"column": c, "reason": "constant column carries no information"})
         else:
             categorical.append(c)
-    return {"numeric": numeric, "categorical": categorical, "dropped": dropped}
+    log_cols: list[str] = []
+    if options.get("log_skewed"):
+        for c in numeric:
+            v = pd.to_numeric(X[c], errors="coerce").dropna().astype(float)
+            if len(v) > 10 and v.min() >= 0 and abs(float(v.skew())) >= options.get("skew_threshold", 1.0):
+                log_cols.append(c)
+    numeric = [c for c in numeric if c not in log_cols]
+    return {"numeric": numeric, "numeric_log": log_cols, "categorical": categorical, "dropped": dropped}
+
+
+def _num_steps(options: dict, log: bool) -> list:
+    steps = [("impute", SimpleImputer(strategy=options["num_impute"], fill_value=0))]
+    if options.get("outliers") == "cap":
+        steps.append(("cap", Winsorizer()))
+    if log:
+        steps.append(("log", FunctionTransformer(np.log1p, feature_names_out="one-to-one")))
+    scaler_cls = SCALERS[options["scaler"]]
+    if scaler_cls is not None:
+        steps.append(("scale", scaler_cls()))
+    return steps
 
 
 def build(X: pd.DataFrame, options: dict | None) -> tuple[ColumnTransformer, dict]:
     options = normalize(options)
     cols = split_columns(X, options)
-    num_steps = [("impute", SimpleImputer(strategy=options["num_impute"], fill_value=0))]
-    scaler_cls = SCALERS[options["scaler"]]
-    if scaler_cls is not None:
-        num_steps.append(("scale", scaler_cls()))
     if options["encoder"] == "onehot":
         enc = OneHotEncoder(handle_unknown="ignore", sparse_output=False, min_frequency=1)
     else:
@@ -96,7 +144,9 @@ def build(X: pd.DataFrame, options: dict | None) -> tuple[ColumnTransformer, dic
     ]
     transformers = []
     if cols["numeric"]:
-        transformers.append(("num", Pipeline(num_steps), cols["numeric"]))
+        transformers.append(("num", Pipeline(_num_steps(options, False)), cols["numeric"]))
+    if cols.get("numeric_log"):
+        transformers.append(("num_log", Pipeline(_num_steps(options, True)), cols["numeric_log"]))
     if cols["categorical"]:
         transformers.append(("cat", Pipeline(cat_steps), cols["categorical"]))
     if not transformers:
@@ -108,20 +158,27 @@ def build(X: pd.DataFrame, options: dict | None) -> tuple[ColumnTransformer, dic
 
 def describe(options: dict, cols: dict) -> list[dict]:
     steps = []
-    if cols["numeric"]:
+    all_num = cols["numeric"] + cols.get("numeric_log", [])
+    if options.get("drop_duplicates"):
+        steps.append({"title": "Remove duplicate rows", "why": "Exact copies of a row teach the model nothing new and can leak the same row into both the training and the test side.", "code": "df = df.drop_duplicates()", "columns": []})
+    if all_num:
         steps.append({
             "title": f"Fill missing numbers with the {options['num_impute'].replace('_', ' ')}",
             "why": "Most models cannot handle blanks. The median is robust to outliers; the mean is fine for symmetric data.",
             "code": f"SimpleImputer(strategy='{options['num_impute']}')",
-            "columns": cols["numeric"],
+            "columns": all_num,
         })
+    if all_num and options.get("outliers") == "cap":
+        steps.append({"title": "Cap extreme values", "why": "Values far outside the usual range (beyond 1.5 times the interquartile range) are pulled back to the edge of that range. The limits are learned on training rows only. Trees do not care about outliers, but linear models and distance models do.", "code": "Winsorizer(k=1.5)  # clip to [Q1 - 1.5*IQR, Q3 + 1.5*IQR]", "columns": all_num})
+    if cols.get("numeric_log"):
+        steps.append({"title": "Log-transform skewed columns", "why": "These columns have a long tail (a few very large values). Taking log(1 + x) squashes the tail so the model sees a more even spread.", "code": "np.log1p(df[cols])", "columns": cols["numeric_log"]})
         if options["scaler"] != "none":
             why = {
                 "standard": "Rescales each number column to mean 0 and spread 1. Distance-based models (KNN, SVM) and gradient models (logistic regression, neural nets) need features on the same scale. Trees do not care.",
                 "minmax": "Squeezes every number column into the 0 to 1 range. Useful when you need bounded inputs, but sensitive to outliers.",
                 "robust": "Scales using the median and interquartile range, so a few extreme values do not dominate.",
             }[options["scaler"]]
-            steps.append({"title": f"Scale numbers ({options['scaler']})", "why": why, "code": f"{SCALERS[options['scaler']].__name__}()", "columns": cols["numeric"]})
+            steps.append({"title": f"Scale numbers ({options['scaler']})", "why": why, "code": f"{SCALERS[options['scaler']].__name__}()", "columns": all_num})
     if cols["categorical"]:
         steps.append({
             "title": f"Fill missing categories with the {options['cat_impute'].replace('_', ' ')} value",

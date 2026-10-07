@@ -9,25 +9,55 @@ from . import catalog
 SCALER = {"standard": "StandardScaler()", "minmax": "MinMaxScaler()", "robust": "RobustScaler()", "none": None}
 
 
+WINSORIZER = """
+class Winsorizer(BaseEstimator, TransformerMixin):
+    # Cap values outside [Q1 - k*IQR, Q3 + k*IQR]. Limits are learned on training rows only.
+    def __init__(self, k=1.5):
+        self.k = k
+    def fit(self, X, y=None):
+        X = np.asarray(X, dtype=float)
+        q1, q3 = np.nanpercentile(X, 25, axis=0), np.nanpercentile(X, 75, axis=0)
+        self.lower_, self.upper_ = q1 - self.k * (q3 - q1), q3 + self.k * (q3 - q1)
+        return self
+    def transform(self, X):
+        return np.clip(np.asarray(X, dtype=float), self.lower_, self.upper_)
+"""
+
+
 def _prep_block(prep_info: dict) -> str:
     o = prep_info.get("options", {})
     cols = prep_info.get("columns", {})
     scaler = SCALER.get(o.get("scaler", "standard"))
     enc = "OneHotEncoder(handle_unknown='ignore', sparse_output=False)" if o.get("encoder", "onehot") == "onehot" else "OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)"
-    num = f"[('impute', SimpleImputer(strategy='{o.get('num_impute', 'median')}'))" + (f", ('scale', {scaler})" if scaler else "") + "]"
+    cap = o.get("outliers") == "cap"
+    base = f"('impute', SimpleImputer(strategy='{o.get('num_impute', 'median')}'))" + (", ('cap', Winsorizer())" if cap else "")
+    num = "[" + base + (f", ('scale', {scaler})" if scaler else "") + "]"
+    num_log = "[" + base + ", ('log', FunctionTransformer(np.log1p))" + (f", ('scale', {scaler})" if scaler else "") + "]"
     lines = [
         "# --- Preprocessing -----------------------------------------------------",
-        "# Numeric columns: fill blanks, then scale. Text columns: fill blanks, then encode.",
+        "# Numeric columns: fill blanks" + (", cap outliers" if cap else "") + ", then scale. Text columns: fill blanks, then encode.",
         "# Wrapped in a ColumnTransformer so it is fitted on training rows only (no leakage).",
+    ]
+    if o.get("drop_duplicates"):
+        lines.append("df = df.drop_duplicates()")
+    if cap:
+        lines.append(WINSORIZER)
+    lines += [
         f"numeric = {cols.get('numeric', [])!r}",
         f"categorical = {cols.get('categorical', [])!r}",
     ]
+    if cols.get("numeric_log"):
+        lines.append(f"numeric_log = {cols.get('numeric_log')!r}  # skewed columns get log(1 + x)")
     dropped = [d["column"] for d in cols.get("dropped", [])]
     if dropped:
         lines.append(f"# Dropped automatically: {dropped!r}")
     lines += [
         "preprocessor = ColumnTransformer([",
         f"    ('num', Pipeline({num}), numeric),",
+    ]
+    if cols.get("numeric_log"):
+        lines.append(f"    ('num_log', Pipeline({num_log}), numeric_log),")
+    lines += [
         f"    ('cat', Pipeline([('impute', SimpleImputer(strategy='{o.get('cat_impute', 'most_frequent')}', fill_value='missing')), ('encode', {enc})]), categorical),",
         "], remainder='drop')",
     ]
@@ -36,10 +66,11 @@ def _prep_block(prep_info: dict) -> str:
 
 IMPORTS = """import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, OneHotEncoder, OrdinalEncoder
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, OneHotEncoder, OrdinalEncoder, FunctionTransformer
 """
 
 

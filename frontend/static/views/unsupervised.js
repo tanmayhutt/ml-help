@@ -7,7 +7,8 @@ import { prepSteps, chip } from "./experiment.js";
 export async function render(root, [id], signal) {
   const [ds, catalog] = await Promise.all([api.dataset(id), cached("catalog")]);
   const cols = ds.profile.columns;
-  const S = { prep: { scaler: "standard", encoder: "onehot", num_impute: "median", cat_impute: "most_frequent", drop_columns: [] } };
+  const rec = ds.profile.cleaning?.options || {};
+  const S = { prep: { scaler: "standard", encoder: "onehot", num_impute: "median", cat_impute: "most_frequent", drop_columns: [], drop_duplicates: !!rec.drop_duplicates, outliers: rec.outliers || "none", log_skewed: !!rec.log_skewed } };
   root.append(el("div", { class: "page-head" }, el("div", { class: "grow" },
     el("div", { class: "crumb" }, el("a", { href: "#/datasets", text: "Home" }), svgIcon("arrow", 12), el("a", { href: `#/dataset/${id}`, text: ds.name }), svgIcon("arrow", 12), el("span", { text: "Find groups or odd rows" })),
     el("h1", { text: "Find groups or odd rows" }))));
@@ -17,7 +18,9 @@ export async function render(root, [id], signal) {
   root.append(step(3, "Which columns should be used?", [
     el("p", { class: "plain", text: "All columns are used unless you untick them. Leave out IDs, names, and any answer column." }),
     dropChips,
-    details("Settings", el("div", { class: "grid grid-3" }, field("Scale numbers", select([{ value: "standard", label: "yes (recommended)" }, { value: "none", label: "no" }], "standard", (v) => (S.prep.scaler = v))))),
+    details("Settings", el("div", { class: "grid grid-3" }, field("Scale numbers", select([{ value: "standard", label: "yes (recommended)" }, { value: "none", label: "no" }], "standard", (v) => (S.prep.scaler = v))),
+      field("Outliers", select([{ value: "cap", label: "cap extreme values" }, { value: "none", label: "leave as is" }], S.prep.outliers, (v) => (S.prep.outliers = v))),
+      field("Long-tailed columns", select([{ value: "1", label: "log-transform" }, { value: "0", label: "leave as is" }], S.prep.log_skewed ? "1" : "0", (v) => (S.prep.log_skewed = v === "1"))))),
     button("Continue", { kind: "primary", icon: "arrow", onclick: buildStep2 })]), s2, s3);
 
   function buildStep2() {

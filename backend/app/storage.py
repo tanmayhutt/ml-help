@@ -60,7 +60,31 @@ def parse_upload(filename: str, raw: bytes) -> pd.DataFrame:
             seen[c] = 0
             cols.append(c)
     df.columns = cols
-    df = df.convert_dtypes().infer_objects()
+    return classic_dtypes(df)
+
+
+def classic_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Plain numpy dtypes only: object text with NaN for blanks, float/int numbers, bool. Nullable pandas
+    extension dtypes (pd.NA) break scikit-learn's imputers, so they are never stored."""
+    df = df.infer_objects()
+    for c in df.columns:
+        s = df[c]
+        if isinstance(s.dtype, pd.StringDtype) or str(s.dtype) in ("boolean", "Int64", "Int32", "Float64", "Float32"):
+            if str(s.dtype).startswith(("Int", "Float")):
+                df[c] = s.astype("float64") if s.isna().any() else s.astype("int64" if str(s.dtype).startswith("Int") else "float64")
+            elif str(s.dtype) == "boolean":
+                df[c] = s.astype(object).where(s.notna(), None).astype(object)
+            else:
+                df[c] = s.astype(object).where(s.notna(), None)
+        elif s.dtype == object:
+            # text column: try numbers, otherwise keep text with None for blanks
+            num = pd.to_numeric(s, errors="coerce")
+            if num.notna().sum() == s.notna().sum() and s.notna().any():
+                df[c] = num
+            else:
+                df[c] = s.where(s.notna(), None)
+                # strings only
+                df[c] = df[c].map(lambda v: v if v is None else str(v))
     return df
 
 
