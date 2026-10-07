@@ -1,0 +1,17 @@
+# local memory
+context.md
+
+# python
+__pycache__/
+*.pyc
+.venv/
+backend/.venv/
+
+# node
+node_modules/
+frontend/dist/
+
+# runtime data
+data/
+*.env
+.env.production

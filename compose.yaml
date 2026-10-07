@@ -1,0 +1,46 @@
+name: ml-help
+services:
+  app:
+    image: ${ML_HELP_IMAGE:-ml-help-app}
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      ML_DATA_DIR: /data
+      ML_N_JOBS: "2"
+      ML_JOB_TIMEOUT_SEC: "180"
+      ML_JOB_MEMORY_MB: "2048"
+      ML_QUEUE_MAX: "6"
+      ML_MAX_UPLOAD_MB: "20"
+      ML_RETENTION_DAYS: "7"
+    ports:
+      - "127.0.0.1:5080:8000"
+    volumes:
+      - ml-help-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Hard ceiling so a runaway job can never starve the other apps on this box.
+    cpus: "2.0"
+    mem_limit: 3g
+    memswap_limit: 3g
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  ml-help-data:

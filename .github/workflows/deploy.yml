@@ -1,0 +1,36 @@
+name: Deploy to Ubuntu
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ml-help-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: production
+      url: https://ml.tanmaytiwari.me
+    steps:
+      - name: Deploy exact main revision
+        env:
+          DEPLOY_KEY: ${{ secrets.ML_HELP_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.ML_HELP_KNOWN_HOSTS }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/ml-help
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/ml-help ~/.ssh/known_hosts
+          trap 'rm -f ~/.ssh/ml-help' EXIT
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -i ~/.ssh/ml-help ubuntu@15.206.247.203 "deploy $REVISION"
+      - name: Verify public HTTPS endpoint
+        # Soft until the DNS record and Caddy site exist; the server-side script already verified localhost health.
+        continue-on-error: true
+        run: curl --fail --silent --show-error --retry 3 --max-time 20 https://ml.tanmaytiwari.me/api/health

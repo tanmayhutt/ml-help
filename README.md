@@ -1,0 +1,36 @@
+# ML Help
+
+Upload a dataset, race scikit-learn models, build ensembles, tune hyperparameters, cluster, reduce, detect anomalies, and read a plain-English explanation plus the full Python code for every step. Built as a study tool that is also a usable tool.
+
+## Run locally
+
+```bash
+cd backend
+uv venv --python 3.12 .venv && uv pip install -p .venv/bin/python -r requirements.txt
+.venv/bin/uvicorn app.main:app --reload --port 8000
+```
+
+Open http://127.0.0.1:8000. The frontend is plain HTML, CSS, and ES modules in `frontend/`, served by FastAPI. No build step.
+
+End-to-end check against a running server:
+
+```bash
+cd backend && .venv/bin/python tests/smoke.py http://127.0.0.1:8000
+```
+
+## Layout
+
+- `backend/app/config.py`: every resource cap, all overridable by `ML_*` environment variables.
+- `backend/app/runner.py`: one job at a time, each in a spawned process with a hard timeout and memory limit.
+- `backend/app/ml/`: catalog (models with explanations), preprocess, train (race, train, ensembles, tune, curve), unsupervised, evaluate, codegen, export.
+- `backend/app/content/`: glossary and guided lessons.
+- `frontend/static/`: `ui.js` DOM helpers, `charts.js` SVG charts, `views/` one module per screen.
+- `deploy/`: Caddy snippet and deploy script for the shared server.
+
+## Docker
+
+```bash
+docker compose up --build
+```
+
+Serves on 127.0.0.1:5080 with a 2 CPU, 3 GB ceiling.

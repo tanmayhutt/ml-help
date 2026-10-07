@@ -1,0 +1,24 @@
+# ML Help. Imported from /etc/caddy/Caddyfile with one line: import /etc/caddy/ml-help.caddy
+ml.tanmaytiwari.me {
+    encode zstd gzip
+    request_body {
+        max_size 25MB
+    }
+    reverse_proxy 127.0.0.1:5080 {
+        transport http {
+            read_timeout 120s
+            write_timeout 120s
+        }
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+    }
+    log {
+        output file /var/log/caddy/ml-help.log
+        format console
+    }
+}

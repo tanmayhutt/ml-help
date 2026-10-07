@@ -1,0 +1,364 @@
+"""Supervised jobs: the model race, single training, ensembles, tuning, and learning curves.
+Every function receives a `progress` callback and a `deadline` (epoch seconds) and stops
+cleanly when the budget runs out, so a heavy dataset never runs away."""
+from __future__ import annotations
+
+import time
+from typing import Any, Callable
+
+import numpy as np
+import pandas as pd
+from sklearn.base import clone
+from sklearn.ensemble import (
+    BaggingClassifier,
+    BaggingRegressor,
+    StackingClassifier,
+    StackingRegressor,
+    VotingClassifier,
+    VotingRegressor,
+)
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.model_selection import (
+    RandomizedSearchCV,
+    StratifiedKFold,
+    KFold,
+    cross_val_score,
+    learning_curve,
+    train_test_split,
+)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder
+
+from .. import config
+from . import catalog, evaluate, preprocess
+
+Progress = Callable[[str, float], None]
+
+
+def prepare(df: pd.DataFrame, target: str, task: str, prep_options: dict | None) -> dict:
+    if target not in df.columns:
+        raise ValueError(f"Target column '{target}' not found.")
+    data = df[df[target].notna()].copy()
+    X = data.drop(columns=[target])
+    y = data[target]
+    if task == "classification":
+        le = LabelEncoder()
+        y_enc = pd.Series(le.fit_transform(y.astype(str)), index=y.index)
+        classes = [str(c) for c in le.classes_]
+        counts = y.astype(str).value_counts()
+        if counts.min() < 2:
+            raise ValueError(f"Class '{counts.idxmin()}' has only one row. Every class needs at least 2 rows.")
+    else:
+        y_enc = pd.to_numeric(y, errors="coerce")
+        if y_enc.isna().any():
+            keep = y_enc.notna()
+            X, y_enc = X[keep], y_enc[keep]
+        y_enc = y_enc.astype(float)
+        classes = None
+    ct, prep_info = preprocess.build(X, prep_options)
+    return {"X": X, "y": y_enc, "classes": classes, "prep": ct, "prep_info": prep_info}
+
+
+def _cv(task: str, n_splits: int):
+    if task == "classification":
+        return StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=config.RANDOM_STATE)
+    return KFold(n_splits=n_splits, shuffle=True, random_state=config.RANDOM_STATE)
+
+
+def _scoring(task: str, metric: str | None) -> str:
+    if task == "classification":
+        return metric if metric in {"accuracy", "f1_macro", "balanced_accuracy", "roc_auc_ovr"} else "accuracy"
+    return metric if metric in {"r2", "neg_mean_absolute_error", "neg_root_mean_squared_error"} else "r2"
+
+
+def _split(X, y, task, test_size: float):
+    strat = y if task == "classification" else None
+    try:
+        return train_test_split(X, y, test_size=test_size, random_state=config.RANDOM_STATE, stratify=strat)
+    except ValueError:
+        return train_test_split(X, y, test_size=test_size, random_state=config.RANDOM_STATE)
+
+
+def leaderboard(df, params: dict, progress: Progress, deadline: float) -> dict:
+    task, target = params["task"], params["target"]
+    P = prepare(df, target, task, params.get("preprocess"))
+    X, y, _ = preprocess.subsample(P["X"], P["y"], config.LEADERBOARD_ROWS, task == "classification")
+    subsampled = len(X) < len(P["X"])
+    reg = catalog.registry(task)
+    wanted = params.get("models") or list(reg.keys())
+    scoring = _scoring(task, params.get("metric"))
+    folds = min(config.CV_FOLDS, int(params.get("folds") or config.CV_FOLDS))
+    cv = _cv(task, folds)
+    rows: list[dict] = []
+    narration = [
+        {"step": "Data", "text": f"Using {len(X)} rows and {X.shape[1]} raw columns." + (f" The dataset was subsampled from {len(P['X'])} rows so that thirteen models can race in seconds; train the winner on the full data afterwards." if subsampled else ""), "code": f"X = df.drop(columns=['{target}']); y = df['{target}']"},
+        {"step": "Validation", "text": f"Every model is scored with {folds}-fold {'stratified ' if task == 'classification' else ''}cross-validation: the data is cut into {folds} parts, each part takes a turn as the test set, and the scores are averaged. That costs {folds} fits per model but gives a far more trustworthy number than a single split.", "code": f"cross_val_score(pipe, X, y, cv={folds}, scoring='{scoring}')"},
+    ]
+    total = len(wanted)
+    for i, key in enumerate(wanted):
+        if key not in reg:
+            continue
+        m = reg[key]
+        progress(f"Racing {m['name']}", i / max(total, 1))
+        if time.time() > deadline - 5:
+            rows.append({"key": key, "name": m["name"], "family": m["family"], "status": "skipped", "note": "Time budget exhausted."})
+            continue
+        if m.get("slow") and len(X) > config.SLOW_MODEL_ROWS and not params.get("include_slow"):
+            rows.append({"key": key, "name": m["name"], "family": m["family"], "status": "skipped", "note": f"Skipped: this model scales badly above {config.SLOW_MODEL_ROWS} rows. Tick 'include slow models' to force it."})
+            continue
+        pipe = Pipeline([("prep", clone(P["prep"])), ("model", m["make"]())])
+        t0 = time.time()
+        try:
+            scores = cross_val_score(pipe, X, y, cv=cv, scoring=scoring, n_jobs=1, error_score="raise")
+            rows.append({
+                "key": key, "name": m["name"], "family": m["family"], "status": "ok",
+                "mean": round(float(scores.mean()), 5), "std": round(float(scores.std()), 5),
+                "folds": [round(float(s), 5) for s in scores], "seconds": round(time.time() - t0, 2),
+            })
+        except Exception as e:  # noqa: BLE001
+            rows.append({"key": key, "name": m["name"], "family": m["family"], "status": "error", "note": str(e)[:200]})
+    ok = [r for r in rows if r["status"] == "ok"]
+    ok.sort(key=lambda r: r["mean"], reverse=True)
+    ranked = ok + [r for r in rows if r["status"] != "ok"]
+    summary = _leaderboard_summary(ranked, task, scoring)
+    return {
+        "task": task, "target": target, "scoring": scoring, "rows_used": len(X), "rows_total": len(P["X"]),
+        "subsampled": subsampled, "folds": folds, "leaderboard": ranked,
+        "preprocessing": P["prep_info"], "narration": narration, "summary": summary,
+    }
+
+
+def _leaderboard_summary(ranked: list[dict], task: str, scoring: str) -> list[str]:
+    ok = [r for r in ranked if r["status"] == "ok"]
+    if not ok:
+        return ["No model finished. Check the error notes."]
+    best, worst = ok[0], ok[-1]
+    out = [f"{best['name']} won with {scoring} = {best['mean']:.4f} (plus or minus {best['std']:.4f} across folds)."]
+    fam = {}
+    for r in ok:
+        fam.setdefault(r["family"], []).append(r["mean"])
+    fam_rank = sorted(fam.items(), key=lambda kv: -max(kv[1]))
+    out.append("Best family: " + ", ".join(f"{f} ({max(v):.3f})" for f, v in fam_rank[:3]) + ".")
+    spread = best["mean"] - worst["mean"]
+    if spread < 0.02:
+        out.append("All models land within 0.02 of each other. The data, not the algorithm, is the limit. Spend time on features rather than model choice.")
+    else:
+        out.append(f"The gap from best to worst is {spread:.3f}. Model choice matters on this data.")
+    ens = [r for r in ok if r["family"] in ("bagging", "boosting")]
+    single = [r for r in ok if r["family"] not in ("bagging", "boosting")]
+    if ens and single and max(r["mean"] for r in ens) > max(r["mean"] for r in single):
+        out.append("Ensembles beat every single learner, which is the usual story on tabular data: averaging many trees cancels their individual mistakes.")
+    elif ens and single:
+        out.append(f"A single learner ({single[0]['name']}) matched or beat the ensembles. The relationship is probably simple or close to linear.")
+    high_var = [r for r in ok if r["std"] > 0.05]
+    if high_var:
+        out.append(f"{high_var[0]['name']} varies a lot between folds (std {high_var[0]['std']:.3f}). With small data, a single train/test split would have been luck.")
+    return out
+
+
+def build_estimator(task: str, spec: dict) -> tuple[Any, str, list[dict]]:
+    """spec: {"kind": "single"|"voting"|"stacking"|"bagging", "model": key, "members": [keys], "final": key, "params": {...}}"""
+    reg = catalog.registry(task)
+    kind = spec.get("kind", "single")
+    narr: list[dict] = []
+    if kind == "single":
+        key = spec.get("model")
+        if key not in reg:
+            raise ValueError(f"Unknown model '{key}'.")
+        est = reg[key]["make"]()
+        est.set_params(**_clean_params(spec.get("params"), est))
+        narr.append({"step": "Model", "text": f"{reg[key]['name']}: {reg[key]['explain']}", "code": f"{est.__class__.__name__}({_fmt_params(est, reg[key])})"})
+        return est, reg[key]["name"], narr
+    members = [k for k in (spec.get("members") or []) if k in reg]
+    if kind in ("voting", "stacking") and len(members) < 2:
+        raise ValueError("Pick at least two member models for an ensemble.")
+    if kind == "voting":
+        ests = [(k, reg[k]["make"]()) for k in members]
+        if task == "classification":
+            voting = spec.get("voting", "soft")
+            if voting == "soft":
+                # all members must support predict_proba
+                for k, e in ests:
+                    if k == "svm":
+                        e.set_params(probability=True)
+            est = VotingClassifier(ests, voting=voting, n_jobs=1)
+            name = f"{voting.title()} Voting ({', '.join(reg[k]['name'] for k in members)})"
+            narr.append({"step": "Ensemble", "text": f"{catalog.ENSEMBLE_TEXT['voting']} Members: {', '.join(reg[k]['name'] for k in members)}.", "code": f"VotingClassifier([...], voting='{voting}')"})
+        else:
+            est = VotingRegressor(ests, n_jobs=1)
+            name = f"Voting ({', '.join(reg[k]['name'] for k in members)})"
+            narr.append({"step": "Ensemble", "text": f"Voting regressor: averages the predictions of {', '.join(reg[k]['name'] for k in members)}.", "code": "VotingRegressor([...])"})
+        return est, name, narr
+    if kind == "stacking":
+        ests = [(k, reg[k]["make"]()) for k in members]
+        final_key = spec.get("final")
+        if task == "classification":
+            final = reg[final_key]["make"]() if final_key in reg else LogisticRegression(max_iter=1000)
+            est = StackingClassifier(ests, final_estimator=final, cv=3, n_jobs=1, stack_method="auto")
+        else:
+            final = reg[final_key]["make"]() if final_key in reg else Ridge()
+            est = StackingRegressor(ests, final_estimator=final, cv=3, n_jobs=1)
+        name = f"Stacking ({', '.join(reg[k]['name'] for k in members)}) -> {final.__class__.__name__}"
+        narr.append({"step": "Ensemble", "text": f"{catalog.ENSEMBLE_TEXT['stacking']} Base: {', '.join(reg[k]['name'] for k in members)}. Meta-learner: {final.__class__.__name__}.", "code": f"Stacking{'Classifier' if task == 'classification' else 'Regressor'}([...], final_estimator={final.__class__.__name__}(), cv=3)"})
+        return est, name, narr
+    if kind == "bagging":
+        base_key = spec.get("model") or "tree"
+        if base_key not in reg:
+            raise ValueError(f"Unknown base model '{base_key}'.")
+        n = int(min(max(spec.get("n_estimators", 25), 2), 100))
+        base = reg[base_key]["make"]()
+        cls = BaggingClassifier if task == "classification" else BaggingRegressor
+        est = cls(estimator=base, n_estimators=n, n_jobs=1, random_state=config.RANDOM_STATE)
+        name = f"Bagging x{n} of {reg[base_key]['name']}"
+        narr.append({"step": "Ensemble", "text": f"{catalog.ENSEMBLE_TEXT['bagging']} Here: {n} copies of {reg[base_key]['name']}, each on a bootstrap sample.", "code": f"{cls.__name__}(estimator={base.__class__.__name__}(), n_estimators={n})"})
+        return est, name, narr
+    raise ValueError(f"Unknown ensemble kind '{kind}'.")
+
+
+def _clean_params(params: dict | None, est) -> dict:
+    if not params:
+        return {}
+    valid = est.get_params()
+    out = {}
+    for k, v in params.items():
+        if k in valid and v is not None and v != "":
+            out[k] = v
+    return out
+
+
+def _fmt_params(est, meta: dict) -> str:
+    p = est.get_params()
+    keys = [k.replace("model__", "") for k in meta["space"].keys()]
+    return ", ".join(f"{k}={p[k]!r}" for k in keys if k in p)
+
+
+def train(df, params: dict, progress: Progress, deadline: float) -> dict:
+    task, target = params["task"], params["target"]
+    P = prepare(df, target, task, params.get("preprocess"))
+    X, y, _ = preprocess.subsample(P["X"], P["y"], config.TRAIN_ROWS, task == "classification")
+    test_size = float(min(max(params.get("test_size", 0.2), 0.1), 0.5))
+    Xtr, Xte, ytr, yte = _split(X, y, task, test_size)
+    est, name, narr = build_estimator(task, params.get("spec") or {"kind": "single", "model": params.get("model")})
+    pipe = Pipeline([("prep", P["prep"]), ("model", est)])
+    narration = [
+        {"step": "Split", "text": f"{len(Xtr)} rows train the model, {len(Xte)} rows ({int(test_size*100)}%) are held back to test it. {'The split is stratified so each class keeps its share.' if task == 'classification' else ''} The model never sees the test rows while learning.", "code": f"train_test_split(X, y, test_size={test_size}, random_state=42{', stratify=y' if task == 'classification' else ''})"},
+    ] + narr
+    progress(f"Training {name}", 0.2)
+    t0 = time.time()
+    pipe.fit(Xtr, ytr)
+    fit_s = time.time() - t0
+    progress("Evaluating", 0.6)
+    pred = pipe.predict(Xte)
+    train_pred = pipe.predict(Xtr)
+    names = preprocess.feature_names(pipe.named_steps["prep"])
+    if task == "classification":
+        proba = pipe.predict_proba(Xte) if hasattr(pipe, "predict_proba") else None
+        ev = evaluate.classification(yte, pred, proba, P["classes"])
+        train_score = float(evaluate.M.accuracy_score(ytr, train_pred))
+    else:
+        ev = evaluate.regression(yte, pred, n_features=len(names) or X.shape[1])
+        train_score = float(evaluate.M.r2_score(ytr, train_pred))
+    test_score = ev["metrics"][ev["primary"]]
+    ev["train_score"] = round(train_score, 5)
+    ev["fit_diagnosis"] = _fit_diagnosis(train_score, test_score)
+    progress("Measuring feature importance", 0.8)
+    if time.time() < deadline - 10:
+        ev["importance"] = evaluate.feature_importance(pipe, names, Xte, yte, task, config.PERM_IMPORTANCE_ROWS)
+    narration.append({"step": "Fit", "text": f"Training took {fit_s:.2f} s. Train {ev['primary']} = {train_score:.4f}, test {ev['primary']} = {test_score:.4f}. {ev['fit_diagnosis']['text']}", "code": "pipe.fit(X_train, y_train); pipe.score(X_test, y_test)"})
+    return {
+        "task": task, "target": target, "model_name": name, "rows_used": len(X), "rows_total": len(P["X"]),
+        "test_size": test_size, "evaluation": ev, "preprocessing": P["prep_info"], "narration": narration,
+        "feature_names": names[:200], "features": list(P["X"].columns), "classes": P["classes"],
+        "_pipeline": pipe,
+    }
+
+
+def _fit_diagnosis(train_score: float, test_score: float | None) -> dict:
+    if test_score is None:
+        return {"label": "unknown", "text": ""}
+    gap = train_score - test_score
+    if train_score < 0.6 and test_score < 0.6:
+        return {"label": "underfitting", "text": "Both train and test scores are low: the model is too simple or the features do not carry the signal. Try a more flexible model or better features."}
+    if gap > 0.15:
+        return {"label": "overfitting", "text": "The train score is far above the test score: the model memorized the training rows. Add regularization, reduce depth, gather more data, or use an ensemble."}
+    if gap > 0.05:
+        return {"label": "slight overfitting", "text": "A modest train/test gap. Normal for tree ensembles; worth a little regularization."}
+    return {"label": "good fit", "text": "Train and test scores agree. The model generalizes."}
+
+
+def tune(df, params: dict, progress: Progress, deadline: float) -> dict:
+    task, target, key = params["task"], params["target"], params.get("model")
+    reg = catalog.registry(task)
+    if key not in reg:
+        raise ValueError(f"Unknown model '{key}'.")
+    m = reg[key]
+    if not m["space"]:
+        raise ValueError(f"{m['name']} has no hyperparameters worth tuning.")
+    P = prepare(df, target, task, params.get("preprocess"))
+    X, y, sub = preprocess.subsample(P["X"], P["y"], config.TUNE_ROWS, task == "classification")
+    n_iter = int(min(max(params.get("n_iter", 12), 2), config.TUNE_MAX_ITER))
+    folds = min(config.CV_FOLDS, int(params.get("folds") or config.CV_FOLDS))
+    scoring = _scoring(task, params.get("metric"))
+    pipe = Pipeline([("prep", P["prep"]), ("model", m["make"]())])
+    progress(f"Searching {n_iter} configurations of {m['name']}", 0.1)
+    search = RandomizedSearchCV(pipe, m["space"], n_iter=n_iter, cv=_cv(task, folds), scoring=scoring, n_jobs=1, random_state=config.RANDOM_STATE, refit=False, error_score=np.nan)
+    search.fit(X, y)
+    res = search.cv_results_
+    trials = []
+    for i in range(len(res["mean_test_score"])):
+        p = {k.replace("model__", ""): _jsonable(v) for k, v in res["params"][i].items()}
+        trials.append({"params": p, "mean": _r(res["mean_test_score"][i]), "std": _r(res["std_test_score"][i]), "seconds": _r(res["mean_fit_time"][i])})
+    trials.sort(key=lambda t: (t["mean"] is None, -(t["mean"] or 0)))
+    base = cross_val_score(Pipeline([("prep", clone(P["prep"])), ("model", m["make"]())]), X, y, cv=_cv(task, folds), scoring=scoring, n_jobs=1)
+    best = trials[0]
+    narration = [
+        {"step": "Search", "text": f"Random search tried {n_iter} random combinations from the {m['name']} parameter space, scoring each with {folds}-fold CV ({n_iter * folds} fits). Random search beats grid search for the same budget because it does not waste fits on unimportant parameters.", "code": f"RandomizedSearchCV(pipe, space, n_iter={n_iter}, cv={folds}, scoring='{scoring}')"},
+        {"step": "Result", "text": f"Default settings score {base.mean():.4f}. Best found: {best['mean']:.4f} with {best['params']}. " + ("That is a real improvement." if (best["mean"] or 0) - base.mean() > 0.005 else "Tuning barely moved the needle; the defaults were already near the optimum on this data."), "code": "search.best_params_"},
+    ]
+    return {
+        "task": task, "target": target, "model": key, "model_name": m["name"], "scoring": scoring, "rows_used": len(X), "subsampled": sub,
+        "baseline": _r(base.mean()), "trials": trials, "best_params": best["params"], "param_help": m["params"], "narration": narration,
+        "preprocessing": P["prep_info"],
+    }
+
+
+def curve(df, params: dict, progress: Progress, deadline: float) -> dict:
+    """Learning curve: score versus training size. Five points, three folds, capped rows."""
+    task, target = params["task"], params["target"]
+    P = prepare(df, target, task, params.get("preprocess"))
+    X, y, _ = preprocess.subsample(P["X"], P["y"], config.TUNE_ROWS, task == "classification")
+    est, name, _ = build_estimator(task, params.get("spec") or {"kind": "single", "model": params.get("model")})
+    pipe = Pipeline([("prep", P["prep"]), ("model", est)])
+    scoring = _scoring(task, params.get("metric"))
+    progress(f"Learning curve for {name}", 0.2)
+    sizes, tr, te = learning_curve(pipe, X, y, cv=_cv(task, 3), scoring=scoring, train_sizes=np.linspace(0.15, 1.0, 5), n_jobs=1, random_state=config.RANDOM_STATE, shuffle=True)
+    pts = [{"n": int(s), "train": _r(a.mean()), "test": _r(b.mean()), "test_std": _r(b.std())} for s, a, b in zip(sizes, tr, te)]
+    last = pts[-1]
+    if last["train"] - last["test"] > 0.1 and last["test"] < pts[-2]["test"] + 0.01:
+        verdict = "High variance: the train curve stays high while the test curve plateaus far below it. More data or more regularization will help."
+    elif last["test"] - pts[0]["test"] > 0.03:
+        verdict = "The test curve is still climbing. More rows would keep improving this model."
+    elif last["train"] < 0.7 and task == "classification":
+        verdict = "High bias: even the training score is low. The model is too simple for the pattern."
+    else:
+        verdict = "Train and test curves have converged. More data will not help much; better features or a different model family might."
+    return {"model_name": name, "scoring": scoring, "points": pts, "verdict": verdict, "preprocessing": P["prep_info"],
+            "narration": [{"step": "Learning curve", "text": "The model is retrained on growing slices of the training data. Watching how the train and test scores move apart or together tells you whether you are limited by bias (too simple) or variance (too flexible).", "code": "learning_curve(pipe, X, y, cv=3, train_sizes=np.linspace(0.15, 1, 5))"}]}
+
+
+def _r(x) -> float | None:
+    try:
+        v = float(x)
+        return None if np.isnan(v) else round(v, 5)
+    except (TypeError, ValueError):
+        return None
+
+
+def _jsonable(v):
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    if isinstance(v, (np.floating,)):
+        return round(float(v), 6)
+    if isinstance(v, tuple):
+        return list(v)
+    return v
