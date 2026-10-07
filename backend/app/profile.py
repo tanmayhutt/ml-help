@@ -79,7 +79,7 @@ def profile(df: pd.DataFrame) -> dict:
             notes.append({"kind": "info", "text": "Nearly duplicate columns: " + "; ".join(strong[:4]) + ". Linear models get unstable with these; Ridge or dropping one helps."})
     head = df.head(15).astype(object).where(df.head(15).notna(), None)
     return {
-        "rows": n, "cols": len(df.columns), "columns": cols, "notes": notes, "correlation": corr,
+        "rows": n, "cols": len(df.columns), "columns": cols, "notes": notes, "correlation": corr, "suggested_targets": suggest_targets(df, cols),
         "head": {"columns": list(df.columns), "rows": [[_cell(v) for v in r] for r in head.values.tolist()]},
         "memory_bytes": int(df.memory_usage(deep=True).sum()),
     }
@@ -100,3 +100,38 @@ def _cell(v):
     if isinstance(v, (np.bool_, bool)):
         return bool(v)
     return str(v)[:80]
+
+
+TARGET_WORDS = ("target", "label", "class", "outcome", "result", "y", "price", "score", "species", "survived", "churn", "diagnosis", "category", "type", "status", "default", "fraud", "rating", "salary", "value", "sales", "amount", "quality", "grade", "risk", "winner", "approved", "clicked", "purchased", "income", "disease", "progression")
+
+
+def suggest_targets(df: pd.DataFrame, cols: list[dict]) -> list[dict]:
+    """Rank columns by how likely they are to be the thing a person wants to predict. Heuristic, explained."""
+    n = len(df)
+    out = []
+    for i, c in enumerate(cols):
+        score = 0.0
+        why = []
+        name = c["name"].lower()
+        if c.get("looks_id") or c["type"] == "datetime":
+            continue
+        if c["missing_pct"] > 40:
+            continue
+        if c["unique"] <= 1:
+            continue
+        if i == len(cols) - 1:
+            score += 2; why.append("it is the last column")
+        if any(w == name or name.endswith("_" + w) or name.startswith(w + "_") or w in name.split() for w in TARGET_WORDS):
+            score += 3; why.append("its name sounds like an answer")
+        if c["type"] in ("text", "boolean") and 2 <= c["unique"] <= 20:
+            score += 2; why.append(f"it has {c['unique']} categories")
+        if c["type"] == "numeric" and c.get("looks_categorical"):
+            score += 1; why.append("it looks like a code with few values")
+        if c["type"] == "numeric" and not c.get("looks_categorical"):
+            score += 0.5
+        if c["type"] == "text" and c["unique"] > 50:
+            score -= 2
+        kind = "category" if (c["type"] in ("text", "boolean") or c.get("looks_categorical")) else "number"
+        out.append({"column": c["name"], "score": round(score, 2), "kind": kind, "why": ", ".join(why) or "a plain column"})
+    out.sort(key=lambda d: -d["score"])
+    return out[:5]

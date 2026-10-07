@@ -17,24 +17,29 @@ export async function render(root, [id], signal) {
 
   const s2 = el("div"), s3 = el("div"), s4 = el("div");
 
-  // ---- Step 1 --------------------------------------------------------------
+  // ---- Step 3: pick the column -------------------------------------------
   const taskBox = el("div");
-  const targetSel = select([{ value: "", label: "Choose a column" }, ...cols.map((c) => ({ value: c.name, label: c.name }))], S.target || "", async (v) => {
+  const suggestions = (ds.profile.suggested_targets || []).filter((t) => t.score >= 2).slice(0, 3);
+  const pickTarget = async (v) => {
     S.target = v || null; S.task = null; clear(taskBox); clear(s2); clear(s3); clear(s4);
+    [...root.querySelectorAll(".choice")].forEach((c) => c.classList.toggle("on", c.dataset.col === v));
     if (!v) return;
     const t = await api.task(id, v);
     S.task = t.task;
     const kindText = t.task === "classification" ? `"${v}" is a category, so the model will guess which group each row belongs to.` : `"${v}" is a number, so the model will guess a value for each row.`;
     append(taskBox, [notice("ok", kindText), t.alt ? el("div", { class: "row" }, el("span", { class: "muted small", text: "Wrong guess?" }), button(t.alt === "regression" ? "Treat it as a number" : "Treat it as a category", { kind: "small", onclick: () => { S.task = t.alt; buildStep2(); } })) : null]);
     buildStep2();
-  });
+  };
+  const suggestionButtons = suggestions.length ? el("div", { class: "choices" }, suggestions.map((sg, i) => el("button", { type: "button", class: "choice", dataset: { col: sg.column }, onclick: () => pickTarget(sg.column) },
+    el("strong", {}, svgIcon("target", 18), sg.column), el("span", { text: (i === 0 ? "Most likely. " : "") + `A ${sg.kind}: ${sg.why}.` })))) : null;
+  const targetSel = select([{ value: "", label: "Pick a different column" }, ...cols.map((c) => ({ value: c.name, label: c.name }))], "", (v) => pickTarget(v));
   root.append(step(3, "Which column should the model predict?", [
     el("p", { class: "plain", text: "This is the answer column. The tool learns from the other columns to predict it." }),
-    field("Column to predict", targetSel), taskBox]));
+    suggestionButtons, field(suggestions.length ? "Or choose any column" : "Column to predict", targetSel), taskBox]));
   root.append(s2, s3, s4);
-  if (S.target) targetSel.dispatchEvent(new Event("change"));
+  if (S.target) pickTarget(S.target);
 
-  // ---- Step 2 --------------------------------------------------------------
+  // ---- Step 4: one button --------------------------------------------------
   function buildStep2() {
     clear(s2); clear(s3); clear(s4);
     const opts = el("div", { class: "grid grid-3" },
@@ -43,32 +48,36 @@ export async function render(root, [id], signal) {
       field("Scale numbers", select([{ value: "standard", label: "yes, standard (recommended)" }, { value: "minmax", label: "yes, 0 to 1" }, { value: "robust", label: "yes, ignore outliers" }, { value: "none", label: "no" }], S.prep.scaler, (v) => (S.prep.scaler = v)), "Puts all number columns on the same scale so none dominates."),
       field("Text columns", select([{ value: "onehot", label: "one column per value (recommended)" }, { value: "ordinal", label: "replace with numbers" }], S.prep.encoder, (v) => (S.prep.encoder = v))));
     const dropChips = el("div", { class: "chips" }, cols.filter((c) => c.name !== S.target).map((c) => chip(c.name, S.prep.drop_columns.includes(c.name), (on) => { S.prep.drop_columns = on ? [...new Set([...S.prep.drop_columns, c.name])] : S.prep.drop_columns.filter((x) => x !== c.name); })));
-    s2.append(step(4, "Prepare the data", [
-      el("p", { class: "plain", text: "Blanks get filled, numbers get scaled, and text gets turned into numbers. The default settings work for most files." }),
-      details("Change settings", opts),
+    const host = el("div");
+    const run = button("Find the best model", { kind: "primary big", icon: "play", onclick: async () => {
+      run.disabled = true;
+      try { const job = await runJob("auto", id, baseParams(), host, signal); S.lastRace = job.result; showResult(autoResult(job.result)); }
+      catch {} finally { run.disabled = false; }
+    } });
+    s2.append(step(4, "Find the best model", [
+      el("p", { class: "plain", text: "One click. Every model on the shelf is tested on your data, the best ones are combined, and you get a clear winner with charts, a saved model, and the code." }),
+      run, host,
+      details("Change how the data is prepared (optional)", [el("p", { class: "muted small", text: "Blanks get filled, numbers get scaled, and text gets turned into numbers. The defaults work for most files." }), opts]),
       details("Leave some columns out (for example IDs or names)", dropChips),
-      button("Continue", { kind: "primary", icon: "arrow", onclick: buildStep3 })]));
+    ]));
+    s2.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  // ---- Step 3 --------------------------------------------------------------
-  function buildStep3() {
-    clear(s3); clear(s4);
-    const reg = catalog[S.task];
+  function nextSteps(reg, bestKey) {
     const form = el("div");
-    s3.append(step(5, "What do you want to do?", [
+    return step("", "What next?", [
       choices([
-        { key: "race", icon: "play", title: "Find the best model", text: "Try every model and rank them. Start here." },
-        { key: "train", icon: "flask", title: "Train one model", text: "Pick a model and see full results and charts." },
-        { key: "ensemble", icon: "layers", title: "Combine models", text: "Join several models into one stronger one." },
-        { key: "tune", icon: "sliders", title: "Fine-tune a model", text: "Try different settings to squeeze out a better score." },
+        { key: "tune", icon: "sliders", title: "Fine-tune the winner", text: "Try different settings to squeeze out a bit more." },
+        { key: "train", icon: "flask", title: "Train a different model", text: "Pick any model and see its full results." },
+        { key: "ensemble", icon: "layers", title: "Combine models your way", text: "Choose which models to join together." },
         { key: "curve", icon: "scatter", title: "Would more data help?", text: "See how the score changes with more rows." },
-      ], (k) => { clear(form).append({ race: raceForm, train: trainForm, ensemble: ensembleForm, tune: tuneForm, curve: curveForm }[k](reg)); }),
-      form]));
-    s3.scrollIntoView({ behavior: "smooth", block: "start" });
+        { key: "race", icon: "play", title: "Re-run with chosen models", text: "Pick exactly which models to test." },
+      ], (k) => { clear(form).append({ race: raceForm, train: trainForm, ensemble: ensembleForm, tune: tuneForm, curve: curveForm }[k](reg, { model: bestKey })); }),
+      form]);
   }
 
   function baseParams() { return { task: S.task, target: S.target, preprocess: S.prep }; }
-  function showResult(node) { clear(s4).append(step(6, "Result", node)); s4.scrollIntoView({ behavior: "smooth", block: "start" }); }
+  function showResult(node, extra) { clear(s4).append(step(5, "Result", node)); if (extra) s4.append(extra); s4.scrollIntoView({ behavior: "smooth", block: "start" }); }
 
   function raceForm(reg) {
     const chosen = new Set(reg.map((m) => m.key));
@@ -77,7 +86,7 @@ export async function render(root, [id], signal) {
     const host = el("div");
     const run = button("Run", { kind: "primary", icon: "play", onclick: async () => {
       run.disabled = true;
-      try { const job = await runJob("leaderboard", id, { ...baseParams(), models: [...chosen], include_slow: slow.checked }, host, signal); S.lastRace = job.result; showResult(raceResult(job.result, reg)); }
+      try { const job = await runJob("leaderboard", id, { ...baseParams(), models: [...chosen], include_slow: slow.checked }, host, signal); S.lastRace = job.result; showResult(raceResult(job.result, reg), nextSteps(reg, job.result.leaderboard[0]?.key)); }
       catch {} finally { run.disabled = false; }
     } });
     return el("div", { class: "stack" },
@@ -87,7 +96,7 @@ export async function render(root, [id], signal) {
   }
 
   function trainForm(reg, preset) {
-    const modelSel = select(reg.map((m) => ({ value: m.key, label: m.name })), preset?.model || S.lastRace?.leaderboard?.[0]?.key || reg[0].key, () => refreshParams());
+    const modelSel = select(reg.map((m) => ({ value: m.key, label: m.name })), (preset?.model && reg.some((m) => m.key === preset.model) ? preset.model : null) || S.lastRace?.leaderboard?.find((r) => r.status === "ok" && reg.some((m) => m.key === r.key))?.key || reg[0].key, () => refreshParams());
     const explain = el("p", { class: "muted small" });
     const paramsBox = el("div", { class: "grid grid-3" });
     const paramVals = {};
@@ -106,7 +115,7 @@ export async function render(root, [id], signal) {
       try {
         const spec = { kind: "single", model: modelSel.value, params: Object.fromEntries(Object.entries(paramVals).filter(([, v]) => v !== undefined)) };
         const job = await runJob("train", id, { ...baseParams(), spec, test_size: Number(testSize.value) }, host, signal);
-        showResult(trainResult(job.result));
+        showResult(trainResult(job.result), nextSteps(reg, modelSel.value));
       } catch {} finally { run.disabled = false; }
     } });
     return el("div", { class: "stack" },
@@ -138,37 +147,84 @@ export async function render(root, [id], signal) {
       try {
         const spec = kindSel.value === "bagging" ? { kind: "bagging", model: baseKey, n_estimators: nEst } : { kind: kindSel.value, members: [...members], final: finalKey, voting };
         const job = await runJob("train", id, { ...baseParams(), spec }, host, signal);
-        showResult(trainResult(job.result));
+        showResult(trainResult(job.result), nextSteps(reg));
       } catch {} finally { run.disabled = false; }
     } });
     return el("div", { class: "stack" }, field("How to combine", kindSel), explain, body, run, host);
   }
 
-  function tuneForm(reg) {
+  function tuneForm(reg, preset) {
     const tunable = reg.filter((m) => m.tunable.length);
-    const modelSel = select(tunable.map((m) => ({ value: m.key, label: m.name })), S.lastRace?.leaderboard?.find((r) => r.status === "ok" && tunable.some((m) => m.key === r.key))?.key || tunable[0].key);
+    const modelSel = select(tunable.map((m) => ({ value: m.key, label: m.name })), (preset?.model && tunable.some((m) => m.key === preset.model) ? preset.model : null) || S.lastRace?.leaderboard?.find((r) => r.status === "ok" && tunable.some((m) => m.key === r.key))?.key || tunable[0].key);
     const nIter = select([{ value: 8, label: "8 tries (fast)" }, { value: 12, label: "12 tries" }, { value: 20, label: "20 tries (slow)" }], 12);
     const host = el("div");
     const run = button("Start tuning", { kind: "primary", icon: "sliders", onclick: async () => {
       run.disabled = true;
-      try { const job = await runJob("tune", id, { ...baseParams(), model: modelSel.value, n_iter: Number(nIter.value) }, host, signal); showResult(tuneResult(job.result)); }
+      try { const job = await runJob("tune", id, { ...baseParams(), model: modelSel.value, n_iter: Number(nIter.value) }, host, signal); showResult(tuneResult(job.result), nextSteps(reg, modelSel.value)); }
       catch {} finally { run.disabled = false; }
     } });
     return el("div", { class: "stack" }, el("p", { class: "plain", text: "The tool tries random settings for the model and keeps the best." }), el("div", { class: "grid grid-3" }, field("Model", modelSel), field("How many settings to try", nIter)), run, host);
   }
 
-  function curveForm(reg) {
-    const modelSel = select(reg.map((m) => ({ value: m.key, label: m.name })), S.lastRace?.leaderboard?.[0]?.key || reg[0].key);
+  function curveForm(reg, preset) {
+    const modelSel = select(reg.map((m) => ({ value: m.key, label: m.name })), (preset?.model && reg.some((m) => m.key === preset.model) ? preset.model : null) || S.lastRace?.leaderboard?.find((r) => r.status === "ok" && reg.some((m) => m.key === r.key))?.key || reg[0].key);
     const host = el("div");
     const run = button("Check", { kind: "primary", icon: "play", onclick: async () => {
       run.disabled = true;
-      try { const job = await runJob("curve", id, { ...baseParams(), model: modelSel.value }, host, signal); showResult(curveResult(job.result)); }
+      try { const job = await runJob("curve", id, { ...baseParams(), model: modelSel.value }, host, signal); showResult(curveResult(job.result), nextSteps(reg, modelSel.value)); }
       catch {} finally { run.disabled = false; }
     } });
     return el("div", { class: "stack" }, el("p", { class: "plain", text: "The model is trained on 15%, 36%, 57%, 79% and 100% of your rows. If the score is still rising at 100%, more data would help." }), field("Model", modelSel), run, host);
   }
 
   // ---- Results ---------------------------------------------------------------
+  function autoResult(r) {
+    const reg = catalog[S.task];
+    const ok = r.leaderboard.filter((x) => x.status === "ok");
+    const items = r.leaderboard.map((x) => ({ label: x.name, value: x.status === "ok" ? x.mean : null, err: x.std, note: x.status === "skipped" ? "skipped" : x.status === "error" ? "failed" : "", color: x.family === "ensemble" ? "#059669" : famColor(x.family) }));
+    const f = r.final; const ev = f.evaluation;
+    const parts = [
+      el("p", { class: "big-answer", text: `Best model: ${r.best.name}` }),
+      el("p", { class: "plain", text: `${METRIC_NAMES[r.scoring] || r.scoring} ${score(r.best.mean)} in cross-validation, ${score(ev.metrics[ev.primary])} on rows it never saw.` }),
+      el("ul", { class: "verdict" }, r.verdict.map((t) => el("li", { text: t }))),
+      r.subsampled ? notice("info", `To stay fast, the comparison used ${r.rows_used.toLocaleString()} of your ${r.rows_total.toLocaleString()} rows.`) : null,
+      el("h4", { text: `All ${ok.length} models, best first (green bars are combined models)` }),
+      barChart(items, { title: "Ranking" }),
+      el("p", { class: "chart-note", text: "Longer bar is better. The small dark line shows how much the score moved between test rounds; models whose lines overlap are effectively tied." }),
+      details("Full table", table(["Model", "Type", "Score", "Varies by", "Time", ""], r.leaderboard.map((x, i) => [
+        el("span", { class: i === 0 && x.status === "ok" ? "winner" : "" }, x.name), x.family === "ensemble" ? "combined: " + (x.members || []).join(", ") : famName(x.family),
+        x.status === "ok" ? score(x.mean) : el("span", { class: "muted", text: x.status === "skipped" ? "skipped" : "failed" }),
+        x.status === "ok" ? `± ${x.std.toFixed(3)}` : "", x.status === "ok" ? `${x.seconds}s` : (x.note || ""),
+        x.status === "ok" && reg.some((m) => m.key === x.key) ? button("Train this", { kind: "small", onclick: () => { clear(s3); s3.append(step("", `Train ${x.name}`, trainForm(reg, { model: x.key }))); s3.scrollIntoView({ behavior: "smooth" }); } }) : ""]))),
+      el("h4", { text: `${r.best.name} in detail` }),
+    ];
+    const diag = ev.fit_diagnosis || {};
+    const diagClass = diag.label === "good fit" ? "diag-good" : diag.label?.includes("overfit") ? "diag-mid" : "diag-bad";
+    const verdict = { "good fit": "Good: the model works about as well on new rows as on the ones it learned from.", overfitting: "Careful: the model memorised its training rows and does worse on new ones.", "slight overfitting": "Mostly fine: a small drop on new rows.", underfitting: "Weak: the model is too simple for this data." }[diag.label] || diag.text;
+    parts.push(el("p", {}, el("strong", { class: diagClass, text: `${verdict} ` }), el("span", { class: "muted small", text: `(training rows ${score(ev.train_score)}, test rows ${score(ev.metrics[ev.primary])})` })));
+    parts.push(metricTiles(ev.metrics, ev.how_to_read, ev.primary), el("p", { class: "muted small", text: "Hover a box to see what the number means." }));
+    const charts = [];
+    if (r.task === "classification") {
+      charts.push(chartCard("Right and wrong guesses", confusionMatrix(ev.confusion, ev.classes), "Rows are the true answer, columns are the model's guess. Green diagonal is correct."));
+      if (ev.roc) charts.push(chartCard("ROC curve", lineChart([{ name: "model", points: ev.roc }], { xd: [0, 1], yd: [0, 1], diagonal: true, xlabel: "false alarms", ylabel: "caught", height: 260 }), "Closer to the top-left corner is better. The dotted line is random guessing."));
+      parts.push(details("Score for each category", table(["Category", { label: "Precision", key: "precision", num: true }, { label: "Recall", key: "recall", num: true }, { label: "F1", key: "f1", num: true }, { label: "Rows", key: "support", num: true }], ev.per_class.map((c) => ({ ...c, Category: c.class })))));
+    } else {
+      charts.push(chartCard("Guess vs real value", scatterChart(ev.pred_vs_actual, null, { diagonal: true, xlabel: "real", ylabel: "guess", height: 300 }), "Each dot is one test row. Dots on the dotted line are perfect guesses."));
+      charts.push(chartCard("Size of the errors", histogram(ev.residual_hist, { zeroLine: true, xlabel: "real minus guess", height: 200 }), "Should be centred on zero. A lean to one side means the model is biased."));
+    }
+    if (ev.importance) charts.push(chartCard("Which columns matter most", barChart(ev.importance.items.map((i) => ({ label: i.feature, value: i.value })), { digits: 4 }), ev.importance.note));
+    parts.push(el("div", { class: "grid grid-2" }, charts));
+    if (r.model_id) parts.push(el("div", { class: "row" },
+      el("a", { class: "btn primary", href: `#/dataset/${id}/predict` }, svgIcon("target"), el("span", { text: "Use this model on new rows" })),
+      el("a", { class: "btn", href: `/api/models/${r.model_id}/download`, download: "" }, svgIcon("download"), el("span", { text: "Download model" })),
+      el("a", { class: "btn", href: `/api/models/${r.model_id}/notebook`, download: "" }, svgIcon("book"), el("span", { text: "Download notebook" }))));
+    parts.push(details("How this was done, step by step", narration(r.narration), true), details("How the data was prepared", prepSteps(r.preprocessing)), fullCode(r));
+    const bestKey = ok.find((x) => x.family !== "ensemble")?.key;
+    const wrap = el("div", {}, ...parts);
+    setTimeout(() => s4.append(nextSteps(reg, bestKey)), 0);
+    return wrap;
+  }
+
   function raceResult(r, reg) {
     const ok = r.leaderboard.filter((x) => x.status === "ok");
     const items = r.leaderboard.map((x) => ({ label: x.name, value: x.status === "ok" ? x.mean : null, err: x.std, note: x.status === "skipped" ? "skipped" : x.status === "error" ? "failed" : "", color: famColor(x.family) }));
@@ -176,7 +232,7 @@ export async function render(root, [id], signal) {
       el("span", { class: i === 0 && x.status === "ok" ? "winner" : "" }, x.name), famName(x.family),
       x.status === "ok" ? x.mean.toFixed(4) : el("span", { class: "muted", text: x.status === "skipped" ? "skipped" : "failed" }),
       x.status === "ok" ? `± ${x.std.toFixed(4)}` : "", x.status === "ok" ? `${x.seconds}s` : (x.note || ""),
-      x.status === "ok" ? button("Train this", { kind: "small", onclick: () => { clear(s3); s3.append(step(5, `Train ${x.name}`, trainForm(reg, { model: x.key }))); s3.scrollIntoView({ behavior: "smooth" }); } }) : "",
+      x.status === "ok" && reg.some((m) => m.key === x.key) ? button("Train this", { kind: "small", onclick: () => { clear(s3); s3.append(step("", `Train ${x.name}`, trainForm(reg, { model: x.key }))); s3.scrollIntoView({ behavior: "smooth" }); } }) : "",
     ]);
     return [
       ok.length ? el("p", { class: "big-answer", text: `Best model: ${ok[0].name} (${METRIC_NAMES[r.scoring] || r.scoring} ${score(ok[0].mean)})` }) : null,

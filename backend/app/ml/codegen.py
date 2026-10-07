@@ -97,9 +97,39 @@ def script(kind: str, params: dict, result: dict) -> str:
     drop = prep_info.get("options", {}).get("drop_columns", []) or []
     head = _head(target, drop)
     prep = _prep_block(prep_info)
+    if kind == "auto":
+        race = script("leaderboard", params, result)
+        best = result.get("best", {})
+        est, imports = estimator_code(task, best.get("spec") or {"kind": "single", "model": "rf"})
+        strat = ", stratify=y" if task == "classification" else ""
+        top = [r for r in result.get("leaderboard", []) if r.get("status") == "ok" and r.get("family") != "ensemble"][:3]
+        vcode, vimp = estimator_code(task, {"kind": "voting", "members": [r["key"] for r in top], "voting": "soft"})
+        scode, simp = estimator_code(task, {"kind": "stacking", "members": [r["key"] for r in top]})
+        return race + f"""
+# --- Ensembles of the top three models -------------------------------------
+{"".join(dict.fromkeys((vimp + simp + imports).splitlines(True)))}
+ensembles = {{
+    'Voting of top 3': {vcode},
+    'Stacking of top 3': {scode},
+}}
+for name, model in ensembles.items():
+    pipe = Pipeline([('prep', preprocessor), ('model', model)])
+    scores = cross_val_score(pipe, X, y, cv=cv, scoring='{result.get('scoring')}')
+    print(f'{{name:32s}} {{scores.mean():.4f}} +/- {{scores.std():.4f}}')
+
+# --- Train the overall winner: {best.get('name')} ---------------------------
+from sklearn.model_selection import train_test_split
+model = {est}
+pipe = Pipeline([('prep', preprocessor), ('model', model)])
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42{strat})
+pipe.fit(X_train, y_train)
+print('score on unseen rows:', pipe.score(X_test, y_test))
+import joblib
+joblib.dump(pipe, 'best_model.joblib')
+"""
     if kind == "leaderboard":
         reg = catalog.registry(task)
-        keys = [r["key"] for r in result.get("leaderboard", []) if r.get("status") == "ok"]
+        keys = [r["key"] for r in result.get("leaderboard", []) if r.get("status") == "ok" and r["key"] in reg]
         imports = "".join(dict.fromkeys(estimator_code(task, {"kind": "single", "model": k})[1] for k in keys))
         shelf = ",\n".join(f"    '{reg[k]['name']}': {estimator_code(task, {'kind': 'single', 'model': k})[0]}" for k in keys)
         cv = "StratifiedKFold" if task == "classification" else "KFold"

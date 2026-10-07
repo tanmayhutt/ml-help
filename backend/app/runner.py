@@ -17,7 +17,7 @@ from typing import Any
 
 from . import config, db, storage
 
-KINDS = {"leaderboard", "train", "tune", "curve", "cluster", "reduce", "anomaly"}
+KINDS = {"auto", "leaderboard", "train", "tune", "curve", "cluster", "reduce", "anomaly"}
 
 
 def _child(job_id: str, kind: str, dataset_id: str, params: dict, deadline: float, conn) -> None:
@@ -44,7 +44,7 @@ def _child(job_id: str, kind: str, dataset_id: str, params: dict, deadline: floa
             conn.send({"type": "progress", "message": msg, "fraction": round(float(frac), 3)})
 
         fn = {
-            "leaderboard": train.leaderboard, "train": train.train, "tune": train.tune, "curve": train.curve,
+            "auto": train.auto, "leaderboard": train.leaderboard, "train": train.train, "tune": train.tune, "curve": train.curve,
             "cluster": unsupervised.cluster, "reduce": unsupervised.reduce, "anomaly": unsupervised.anomaly,
         }[kind]
         result = fn(df, params, progress, deadline)
@@ -158,11 +158,11 @@ class Runner:
             with db.connect() as con:
                 con.execute(
                     "INSERT INTO models (id, job_id, dataset_id, name, task, target, features, metrics, created) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (outcome["model_id"], job_id, row["dataset_id"], result.get("model_name", "model"), result.get("task", ""), result.get("target"),
-                     json.dumps({"features": result.get("features", []), "classes": result.get("classes"), "prep_options": result.get("preprocessing", {}).get("options", {}),
+                    (outcome["model_id"], job_id, row["dataset_id"], (result.get("final") or result).get("model_name", "model"), result.get("task", ""), result.get("target"),
+                     json.dumps({"features": (result.get("final") or result).get("features", []), "classes": (result.get("final") or result).get("classes"), "prep_options": result.get("preprocessing", {}).get("options", {}),
                                  "numeric": result.get("preprocessing", {}).get("columns", {}).get("numeric", []), "categorical": result.get("preprocessing", {}).get("columns", {}).get("categorical", []),
-                                 "spec": params.get("spec") or {"kind": "single", "model": params.get("model")}, "test_size": result.get("test_size")}),
-                     json.dumps(result.get("evaluation", {}).get("metrics", {})), db.now()),
+                                 "spec": (result.get("best") or {}).get("spec") or params.get("spec") or {"kind": "single", "model": params.get("model")}, "test_size": (result.get("final") or result).get("test_size")}),
+                     json.dumps((result.get("final") or result).get("evaluation", {}).get("metrics", {})), db.now()),
                 )
 
     def _finish(self, job_id: str, status: str, result: dict | None = None, error: str | None = None) -> None:

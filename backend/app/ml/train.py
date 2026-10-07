@@ -354,3 +354,81 @@ def _jsonable(v):
     if isinstance(v, tuple):
         return list(v)
     return v
+
+
+def auto(df, params: dict, progress: Progress, deadline: float) -> dict:
+    """One click: race every model, build ensembles from the best ones, train the overall winner, explain the choice."""
+    task, target = params["task"], params["target"]
+    n_rows = int(df[target].notna().sum())
+    params = dict(params)
+    params.setdefault("include_slow", n_rows <= config.LEADERBOARD_ROWS)
+    params.pop("models", None)
+    progress("Checking every model", 0.05)
+    race = leaderboard(df, params, lambda m, f: progress(m, 0.05 + f * 0.5), deadline)
+    ok = [r for r in race["leaderboard"] if r["status"] == "ok"]
+    if not ok:
+        raise ValueError("No model could be trained on this column.")
+    reg = catalog.registry(task)
+    scoring = race["scoring"]
+    folds = race["folds"]
+    P = prepare(df, target, task, params.get("preprocess"))
+    X, y, _ = preprocess.subsample(P["X"], P["y"], config.LEADERBOARD_ROWS, task == "classification")
+    cv = _cv(task, folds)
+    top = [r["key"] for r in ok[:3]]
+    ensembles: list[dict] = []
+    specs = []
+    if len(top) >= 2:
+        specs.append(("Soft voting of top 3" if task == "classification" else "Voting of top 3", {"kind": "voting", "members": top, "voting": "soft"}))
+        specs.append(("Stacking of top 3", {"kind": "stacking", "members": top, "final": "logreg" if task == "classification" else "ridge"}))
+    for i, (label, spec) in enumerate(specs):
+        if time.time() > deadline - 20:
+            ensembles.append({"key": f"ens{i}", "name": label, "family": "ensemble", "status": "skipped", "note": "Time budget exhausted.", "spec": spec})
+            continue
+        progress(f"Trying {label.lower()}", 0.6 + i * 0.12)
+        try:
+            est, name, _ = build_estimator(task, spec)
+            pipe = Pipeline([("prep", clone(P["prep"])), ("model", est)])
+            t0 = time.time()
+            scores = cross_val_score(pipe, X, y, cv=cv, scoring=scoring, n_jobs=1, error_score="raise")
+            ensembles.append({"key": f"ens{i}", "name": label, "family": "ensemble", "status": "ok", "mean": round(float(scores.mean()), 5), "std": round(float(scores.std()), 5),
+                              "folds": [round(float(v), 5) for v in scores], "seconds": round(time.time() - t0, 2), "spec": spec, "members": [reg[k]["name"] for k in top]})
+        except Exception as e:  # noqa: BLE001
+            ensembles.append({"key": f"ens{i}", "name": label, "family": "ensemble", "status": "error", "note": str(e)[:200], "spec": spec})
+    everything = ok + [e for e in ensembles if e["status"] == "ok"]
+    everything.sort(key=lambda r: r["mean"], reverse=True)
+    best = everything[0]
+    runner_up = everything[1] if len(everything) > 1 else None
+    best_spec = best.get("spec") or {"kind": "single", "model": best["key"]}
+    # Train the winner on a hold-out split for full charts and a saved model.
+    progress(f"Training the winner: {best['name']}", 0.85)
+    final = train(df, {**params, "spec": best_spec}, lambda m, f: None, deadline)
+    # Plain-language verdict
+    verdict = []
+    noise = max(best.get("std", 0), (runner_up or {}).get("std", 0) or 0)
+    if runner_up:
+        gap = best["mean"] - runner_up["mean"]
+        if gap <= noise:
+            verdict.append(f"{best['name']} and {runner_up['name']} are a tie: the gap between them ({gap:.3f}) is smaller than the swing between test rounds ({noise:.3f}).")
+        else:
+            verdict.append(f"{best['name']} is clearly ahead of {runner_up['name']} by {gap:.3f}.")
+    best_single = ok[0]
+    best_ens = next((e for e in ensembles if e["status"] == "ok"), None)
+    if best_ens and best["family"] == "ensemble":
+        verdict.append(f"Combining the top models helped: {best['name']} beat the best single model ({best_single['name']}, {best_single['mean']:.3f}).")
+    elif best_ens:
+        verdict.append(f"Combining the top models did not beat {best_single['name']} on its own, so the simpler single model is recommended.")
+    simple = next((r for r in ok if r["family"] in ("linear", "probabilistic", "tree") and best["mean"] - r["mean"] <= max(noise, 0.01)), None)
+    if simple and simple["key"] != best.get("key"):
+        verdict.append(f"{simple['name']} scores almost the same ({simple['mean']:.3f}) and is simpler and faster. Prefer it if you need to explain the model.")
+    verdict.append(f"Final check on rows the model never saw: {final['evaluation']['primary']} {final['evaluation']['metrics'][final['evaluation']['primary']]:.3f}.")
+    narration = race["narration"] + [
+        {"step": "Ensembles", "text": f"The top three models ({', '.join(reg[k]['name'] for k in top)}) were combined two ways: voting, where they average their answers, and stacking, where a small final model learns how much to trust each one. Both were scored with the same {folds}-part cross-validation.", "code": f"VotingClassifier([...], voting='soft'); StackingClassifier([...], cv=3)" if task == "classification" else "VotingRegressor([...]); StackingRegressor([...], cv=3)"},
+        {"step": "Winner", "text": f"{best['name']} had the best cross-validated {scoring} ({best['mean']:.4f}). It was then trained once more with 20% of the rows hidden, to produce the charts below and a saved model you can use.", "code": "pipe.fit(X_train, y_train)"},
+    ]
+    return {
+        "task": task, "target": target, "scoring": scoring, "folds": folds, "rows_used": race["rows_used"], "rows_total": race["rows_total"], "subsampled": race["subsampled"],
+        "leaderboard": everything + [r for r in race["leaderboard"] if r["status"] != "ok"] + [e for e in ensembles if e["status"] != "ok"],
+        "best": {"name": best["name"], "mean": best["mean"], "std": best.get("std"), "family": best["family"], "spec": best_spec},
+        "verdict": verdict, "final": {k: v for k, v in final.items() if k not in ("narration", "preprocessing", "_pipeline", "code")},
+        "model_id": None, "_pipeline": final.get("_pipeline"), "preprocessing": race["preprocessing"], "narration": narration,
+    }

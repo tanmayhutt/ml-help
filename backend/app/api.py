@@ -105,7 +105,18 @@ def load_sample(key: str) -> dict:
 @router.get("/datasets/{dataset_id}")
 def get_dataset(dataset_id: str) -> dict:
     with db.connect() as con:
-        return _dataset_row(con, dataset_id)
+        row = _dataset_row(con, dataset_id)
+    prof = row.get("profile") or {}
+    if "suggested_targets" not in prof:
+        # Profiles written before target suggestion existed: refresh once.
+        try:
+            prof = profile.profile(storage.load_dataset(dataset_id))
+            with db.connect() as con:
+                con.execute("UPDATE datasets SET profile = ? WHERE id = ?", (json.dumps(prof, default=str), dataset_id))
+            row["profile"] = prof
+        except FileNotFoundError:
+            pass
+    return row
 
 
 @router.delete("/datasets/{dataset_id}")
