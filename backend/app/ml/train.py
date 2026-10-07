@@ -91,8 +91,8 @@ def leaderboard(df, params: dict, progress: Progress, deadline: float) -> dict:
     cv = _cv(task, folds)
     rows: list[dict] = []
     narration = [
-        {"step": "Data", "text": f"Using {len(X)} rows and {X.shape[1]} raw columns." + (f" The dataset was subsampled from {len(P['X'])} rows so that thirteen models can race in seconds; train the winner on the full data afterwards." if subsampled else ""), "code": f"X = df.drop(columns=['{target}']); y = df['{target}']"},
-        {"step": "Validation", "text": f"Every model is scored with {folds}-fold {'stratified ' if task == 'classification' else ''}cross-validation: the data is cut into {folds} parts, each part takes a turn as the test set, and the scores are averaged. That costs {folds} fits per model but gives a far more trustworthy number than a single split.", "code": f"cross_val_score(pipe, X, y, cv={folds}, scoring='{scoring}')"},
+        {"step": "Data", "text": f"Using {len(X)} rows and {X.shape[1]} columns." + (f" Only {len(X)} of your {len(P['X'])} rows were used here so the test stays fast. Train the winner afterwards to use all rows." if subsampled else ""), "code": f"X = df.drop(columns=['{target}']); y = df['{target}']"},
+        {"step": "Validation", "text": f"The rows are cut into {folds} parts. Each model is trained {folds} times, each time hiding a different part and scoring on it. The {folds} scores are averaged. This is called cross-validation and it stops one lucky split from fooling you.", "code": f"cross_val_score(pipe, X, y, cv={folds}, scoring='{scoring}')"},
     ]
     total = len(wanted)
     for i, key in enumerate(wanted):
@@ -241,7 +241,7 @@ def train(df, params: dict, progress: Progress, deadline: float) -> dict:
     est, name, narr = build_estimator(task, params.get("spec") or {"kind": "single", "model": params.get("model")})
     pipe = Pipeline([("prep", P["prep"]), ("model", est)])
     narration = [
-        {"step": "Split", "text": f"{len(Xtr)} rows train the model, {len(Xte)} rows ({int(test_size*100)}%) are held back to test it. {'The split is stratified so each class keeps its share.' if task == 'classification' else ''} The model never sees the test rows while learning.", "code": f"train_test_split(X, y, test_size={test_size}, random_state=42{', stratify=y' if task == 'classification' else ''})"},
+        {"step": "Split", "text": f"{len(Xtr)} rows are used to teach the model. {len(Xte)} rows ({int(test_size*100)}%) are hidden and used only to test it afterwards, so the score shows how it does on rows it has never seen.", "code": f"train_test_split(X, y, test_size={test_size}, random_state=42{', stratify=y' if task == 'classification' else ''})"},
     ] + narr
     progress(f"Training {name}", 0.2)
     t0 = time.time()
@@ -264,7 +264,7 @@ def train(df, params: dict, progress: Progress, deadline: float) -> dict:
     progress("Measuring feature importance", 0.8)
     if time.time() < deadline - 10:
         ev["importance"] = evaluate.feature_importance(pipe, names, Xte, yte, task, config.PERM_IMPORTANCE_ROWS)
-    narration.append({"step": "Fit", "text": f"Training took {fit_s:.2f} s. Train {ev['primary']} = {train_score:.4f}, test {ev['primary']} = {test_score:.4f}. {ev['fit_diagnosis']['text']}", "code": "pipe.fit(X_train, y_train); pipe.score(X_test, y_test)"})
+    narration.append({"step": "Fit", "text": f"Training took {fit_s:.2f} seconds. Score on the training rows: {train_score:.4f}. Score on the hidden test rows: {test_score:.4f}. {ev['fit_diagnosis']['text']}", "code": "pipe.fit(X_train, y_train); pipe.score(X_test, y_test)"})
     return {
         "task": task, "target": target, "model_name": name, "rows_used": len(X), "rows_total": len(P["X"]),
         "test_size": test_size, "evaluation": ev, "preprocessing": P["prep_info"], "narration": narration,
@@ -278,12 +278,12 @@ def _fit_diagnosis(train_score: float, test_score: float | None) -> dict:
         return {"label": "unknown", "text": ""}
     gap = train_score - test_score
     if train_score < 0.6 and test_score < 0.6:
-        return {"label": "underfitting", "text": "Both train and test scores are low: the model is too simple or the features do not carry the signal. Try a more flexible model or better features."}
+        return {"label": "underfitting", "text": "Scores are low on both training and test rows. The model is too simple, or the columns do not contain enough information."}
     if gap > 0.15:
-        return {"label": "overfitting", "text": "The train score is far above the test score: the model memorized the training rows. Add regularization, reduce depth, gather more data, or use an ensemble."}
+        return {"label": "overfitting", "text": "The score on training rows is far above the score on test rows: the model memorised instead of learning. Use a simpler setting, more rows, or a combined model."}
     if gap > 0.05:
-        return {"label": "slight overfitting", "text": "A modest train/test gap. Normal for tree ensembles; worth a little regularization."}
-    return {"label": "good fit", "text": "Train and test scores agree. The model generalizes."}
+        return {"label": "slight overfitting", "text": "A small gap between training and test rows. Normal for tree models."}
+    return {"label": "good fit", "text": "Training and test scores agree. The model should work on new rows."}
 
 
 def tune(df, params: dict, progress: Progress, deadline: float) -> dict:
@@ -312,8 +312,8 @@ def tune(df, params: dict, progress: Progress, deadline: float) -> dict:
     base = cross_val_score(Pipeline([("prep", clone(P["prep"])), ("model", m["make"]())]), X, y, cv=_cv(task, folds), scoring=scoring, n_jobs=1)
     best = trials[0]
     narration = [
-        {"step": "Search", "text": f"Random search tried {n_iter} random combinations from the {m['name']} parameter space, scoring each with {folds}-fold CV ({n_iter * folds} fits). Random search beats grid search for the same budget because it does not waste fits on unimportant parameters.", "code": f"RandomizedSearchCV(pipe, space, n_iter={n_iter}, cv={folds}, scoring='{scoring}')"},
-        {"step": "Result", "text": f"Default settings score {base.mean():.4f}. Best found: {best['mean']:.4f} with {best['params']}. " + ("That is a real improvement." if (best["mean"] or 0) - base.mean() > 0.005 else "Tuning barely moved the needle; the defaults were already near the optimum on this data."), "code": "search.best_params_"},
+        {"step": "Search", "text": f"{n_iter} random combinations of settings for {m['name']} were tried. Each one was scored with {folds}-part cross-validation, so {n_iter * folds} models were trained in total.", "code": f"RandomizedSearchCV(pipe, space, n_iter={n_iter}, cv={folds}, scoring='{scoring}')"},
+        {"step": "Result", "text": f"The default settings score {base.mean():.4f}. The best settings found score {best['mean']:.4f}: {best['params']}. " + ("That is a real improvement." if (best["mean"] or 0) - base.mean() > 0.005 else "That is almost no change. The defaults were already good for this data."), "code": "search.best_params_"},
     ]
     return {
         "task": task, "target": target, "model": key, "model_name": m["name"], "scoring": scoring, "rows_used": len(X), "subsampled": sub,
@@ -335,15 +335,15 @@ def curve(df, params: dict, progress: Progress, deadline: float) -> dict:
     pts = [{"n": int(s), "train": _r(a.mean()), "test": _r(b.mean()), "test_std": _r(b.std())} for s, a, b in zip(sizes, tr, te)]
     last = pts[-1]
     if last["train"] - last["test"] > 0.1 and last["test"] < pts[-2]["test"] + 0.01:
-        verdict = "High variance: the train curve stays high while the test curve plateaus far below it. More data or more regularization will help."
+        verdict = "The model is memorising: it scores high on training rows but much lower on new rows. More rows or a simpler model would help."
     elif last["test"] - pts[0]["test"] > 0.03:
-        verdict = "The test curve is still climbing. More rows would keep improving this model."
+        verdict = "Yes, more data would help: the score on new rows is still rising."
     elif last["train"] < 0.7 and task == "classification":
-        verdict = "High bias: even the training score is low. The model is too simple for the pattern."
+        verdict = "The model is too simple: even on its own training rows it scores low. Try a more flexible model."
     else:
-        verdict = "Train and test curves have converged. More data will not help much; better features or a different model family might."
+        verdict = "More data would not help much: the two lines have flattened and met. Better columns or a different model might."
     return {"model_name": name, "scoring": scoring, "points": pts, "verdict": verdict, "preprocessing": P["prep_info"],
-            "narration": [{"step": "Learning curve", "text": "The model is retrained on growing slices of the training data. Watching how the train and test scores move apart or together tells you whether you are limited by bias (too simple) or variance (too flexible).", "code": "learning_curve(pipe, X, y, cv=3, train_sizes=np.linspace(0.15, 1, 5))"}]}
+            "narration": [{"step": "Learning curve", "text": "The model is trained again and again on bigger and bigger slices of your rows. If the score on new rows keeps rising, more data would help. If the training score is high but the new-row score stays low, the model is memorising instead of learning.", "code": "learning_curve(pipe, X, y, cv=3, train_sizes=np.linspace(0.15, 1, 5))"}]}
 
 
 def _r(x) -> float | None:

@@ -178,3 +178,17 @@ summary { cursor: pointer; padding: 10px 0; font-weight: 600; font-size: 0.92rem
   .card-body { padding: 12px; }
   html { font-size: 14px; }
 }
+
+.step .step-n { width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-weight: 700; font-size: 0.85rem; flex-shrink: 0; }
+.step.done .step-n { background: var(--ok); }
+.step.locked { opacity: 0.55; }
+.step.locked .step-n { background: var(--border); color: var(--muted); }
+.choices { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+.choice { text-align: left; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+.choice:hover { border-color: var(--accent); }
+.choice.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.choice strong { display: flex; align-items: center; gap: 8px; }
+.choice span { font-size: 0.84rem; color: var(--muted); }
+.plain { font-size: 1.02rem; }
+.result-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.big-answer { font-size: 1.15rem; font-weight: 600; margin: 4px 0 10px; }

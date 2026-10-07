@@ -26,8 +26,6 @@ async function request(method, path, body, isForm) {
 export const api = {
   health: () => request("GET", "/health"),
   catalog: () => request("GET", "/catalog"),
-  glossary: () => request("GET", "/glossary"),
-  lessons: () => request("GET", "/lessons"),
   samples: () => request("GET", "/samples"),
   datasets: () => request("GET", "/datasets"),
   dataset: (id) => request("GET", `/datasets/${id}`),

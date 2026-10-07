@@ -1,6 +1,6 @@
 # ML Help
 
-Upload a dataset, race scikit-learn models, build ensembles, tune hyperparameters, cluster, reduce, detect anomalies, and read a plain-English explanation plus the full Python code for every step. Built as a study tool that is also a usable tool.
+Upload a dataset, pick a column, and find the best scikit-learn model in numbered steps. Combine models, tune, cluster, draw a 2D map, flag unusual rows. Every result comes with a plain-language explanation and the full Python code.
 
 ## Run locally
 
@@ -23,7 +23,6 @@ cd backend && .venv/bin/python tests/smoke.py http://127.0.0.1:8000
 - `backend/app/config.py`: every resource cap, all overridable by `ML_*` environment variables.
 - `backend/app/runner.py`: one job at a time, each in a spawned process with a hard timeout and memory limit.
 - `backend/app/ml/`: catalog (models with explanations), preprocess, train (race, train, ensembles, tune, curve), unsupervised, evaluate, codegen, export.
-- `backend/app/content/`: glossary and guided lessons.
 - `frontend/static/`: `ui.js` DOM helpers, `charts.js` SVG charts, `views/` one module per screen.
 - `deploy/`: Caddy snippet and deploy script for the shared server.
 

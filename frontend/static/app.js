@@ -6,7 +6,6 @@ import * as dataset from "./views/dataset.js";
 import * as experiment from "./views/experiment.js";
 import * as unsupervised from "./views/unsupervised.js";
 import * as predict from "./views/predict.js";
-import * as learn from "./views/learn.js";
 import * as jobs from "./views/jobs.js";
 
 const routes = [
@@ -16,7 +15,6 @@ const routes = [
   { pattern: /^\/dataset\/([^/]+)\/supervised$/, view: experiment, nav: "datasets" },
   { pattern: /^\/dataset\/([^/]+)\/unsupervised$/, view: unsupervised, nav: "datasets" },
   { pattern: /^\/dataset\/([^/]+)\/predict$/, view: predict, nav: "datasets" },
-  { pattern: /^\/learn(?:\/([^/]+))?$/, view: learn, nav: "learn" },
   { pattern: /^\/jobs(?:\/([^/]+))?$/, view: jobs, nav: "jobs" },
 ];
 

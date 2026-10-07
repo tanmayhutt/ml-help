@@ -12,8 +12,6 @@ from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from . import config, db, limits, profile, samples, storage
-from .content.glossary import GLOSSARY
-from .content.lessons import LESSONS
 from .ml import catalog, codegen, export
 from .ml.tasks import detect_task
 from .runner import KINDS, get_runner
@@ -40,16 +38,6 @@ def health() -> dict:
 @router.get("/catalog")
 def get_catalog() -> dict:
     return catalog.public_catalog()
-
-
-@router.get("/glossary")
-def glossary() -> list:
-    return GLOSSARY
-
-
-@router.get("/lessons")
-def lessons() -> list:
-    return LESSONS
 
 
 @router.get("/samples")

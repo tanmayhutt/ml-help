@@ -107,12 +107,18 @@ export function fmt(v, digits = 4) {
   return String(v);
 }
 
+export const METRIC_NAMES = {
+  accuracy: "Accuracy", balanced_accuracy: "Balanced accuracy", precision: "Precision", recall: "Recall", f1: "F1 score", mcc: "MCC", roc_auc: "ROC AUC", log_loss: "Log loss",
+  r2: "R² score", adjusted_r2: "Adjusted R²", mae: "Average error (MAE)", rmse: "RMSE", mse: "MSE", mape: "Average % error", max_error: "Biggest error",
+  silhouette: "Silhouette", davies_bouldin: "Davies-Bouldin", calinski_harabasz: "Calinski-Harabasz",
+};
+
 export function metricTiles(metrics, help, primary) {
   const wrap = el("div", { class: "tiles" });
   for (const [k, v] of Object.entries(metrics || {})) {
     if (v === null || v === undefined) continue;
     wrap.append(el("div", { class: "tile " + (k === primary ? "primary" : ""), title: help?.[k] || "" },
-      el("div", { class: "tile-label", text: k.replace(/_/g, " ") }),
+      el("div", { class: "tile-label", text: METRIC_NAMES[k] || k.replace(/_/g, " ") }),
       el("div", { class: "tile-value", text: Math.abs(v) >= 1000 ? v.toFixed(1) : v.toFixed(4) })));
   }
   return wrap;
@@ -196,4 +202,19 @@ export function toast(text, kind = "info") {
 export function fullCode(r) {
   if (!r || !r.code) return null;
   return details("Full Python code for this experiment", [el("p", { class: "muted small", text: "The exact pipeline the server ran, as one script. Copy it into a notebook, point it at your CSV, and run it top to bottom." }), codeBlock(r.code)], true);
+}
+
+// Numbered step card. `done` marks finished steps; `locked` greys out steps that are not reachable yet.
+export function step(n, title, body, opts = {}) {
+  return el("section", { class: "card step " + (opts.locked ? "locked" : "") + (opts.done ? " done" : ""), id: opts.id || null },
+    el("header", { class: "card-head" }, el("span", { class: "step-n", text: n }), el("h3", { text: title }), opts.aside || null),
+    el("div", { class: "card-body" }, opts.locked ? el("p", { class: "muted", text: opts.lockedText || "Finish the step above first." }) : body));
+}
+
+// Big choice buttons for "what do you want to do" screens.
+export function choices(items, onpick) {
+  const wrap = el("div", { class: "choices" });
+  items.forEach((it) => wrap.append(el("button", { type: "button", class: "choice", onclick: () => { [...wrap.children].forEach((c) => c.classList.remove("on")); event.currentTarget.classList.add("on"); onpick(it.key); } },
+    el("strong", {}, svgIcon(it.icon || "arrow", 18), it.title), el("span", { text: it.text }))));
+  return wrap;
 }
