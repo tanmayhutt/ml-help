@@ -198,7 +198,7 @@ export async function render(root, [id], signal) {
   function autoResult(r) {
     const reg = catalog[S.task];
     const ok = r.leaderboard.filter((x) => x.status === "ok");
-    const items = r.leaderboard.map((x) => ({ label: x.name, value: x.status === "ok" ? x.mean : null, err: x.std, note: x.status === "skipped" ? "skipped" : x.status === "error" ? "failed" : "", color: x.family === "ensemble" ? "#b23a16" : famColor(x.family) }));
+    const items = r.leaderboard.map((x) => ({ label: x.name, value: x.status === "ok" ? x.mean : null, err: x.std, note: x.status === "skipped" ? "skipped" : x.status === "error" ? "failed" : "", color: x.family === "ensemble" ? "#e8590c" : famColor(x.family) }));
     const f = r.final; const ev = f.evaluation;
     const parts = [
       el("p", { class: "big-answer", text: `Best model: ${r.best.name}` }),
@@ -210,7 +210,7 @@ export async function render(root, [id], signal) {
       r.balance ? notice("info", "A rare class was detected, so models that support it weigh it more. Balanced accuracy is the fairer number to watch.") : null,
       r.log_target ? notice("info", "The answer column has a long tail, so models predict log(value) and convert back.") : null,
       r.subsampled ? notice("info", `To stay fast, the comparison used ${r.rows_used.toLocaleString()} of your ${r.rows_total.toLocaleString()} rows.`) : null,
-      el("h4", { text: `All ${ok.length} models, best first (red bars are combined models)` }),
+      el("h4", { text: `All ${ok.length} models, best first (orange bars are combined models)` }),
       barChart(items, { title: "Ranking" }),
       el("p", { class: "chart-note", text: "Longer bar is better. The small dark line shows how much the score moved between test rounds; models whose lines overlap are effectively tied." }),
       details("Full table", table(["Model", "Type", "Score", "Varies by", "Time", ""], r.leaderboard.map((x, i) => [
@@ -315,7 +315,7 @@ export async function render(root, [id], signal) {
     const best = r.trials[0];
     const gain = (best.mean || 0) - r.baseline;
     const items = r.trials.filter((t) => t.mean !== null).map((t) => ({ label: Object.entries(t.params).map(([k, v]) => `${k}=${fmtv(v)}`).join(", "), value: t.mean, err: t.std }));
-    items.push({ label: "default settings", value: r.baseline, color: "#b9b1a0" });
+    items.push({ label: "default settings", value: r.baseline, color: "#cbd3de" });
     return [
       el("p", { class: "big-answer", text: gain > 0.005 ? `Tuning improved ${r.model_name} from ${score(r.baseline)} to ${score(best.mean)}` : `Tuning did not help much: ${score(r.baseline)} to ${score(best.mean)}. The defaults were already good.` }),
       el("div", { class: "chart-wrap" }, barChart(items, { digits: 4 })),
@@ -370,7 +370,7 @@ export function chip(label, on, onchange, title) {
   return c;
 }
 
-function famColor(f) { return { linear: "#1f4e5f", distance: "#2a7f9e", probabilistic: "#5b4b8a", tree: "#4d6a1f", kernel: "#9a2b55", neural: "#6b4a2b", bagging: "#2d6a4f", boosting: "#8a5a00" }[f] || "#8a847a"; }
+function famColor(f) { return { linear: "#2457d6", distance: "#0e8ea8", probabilistic: "#6f42c1", tree: "#5c940d", kernel: "#c2255c", neural: "#7c4a1e", bagging: "#1a7f4b", boosting: "#8a5a00" }[f] || "#8a94a6"; }
 function famName(f) { return { linear: "linear", distance: "nearest rows", probabilistic: "probability", tree: "decision tree", kernel: "support vector", neural: "neural net", bagging: "many trees (bagging)", boosting: "many trees (boosting)" }[f] || f; }
 
 function parse(v) {

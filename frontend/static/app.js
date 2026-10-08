@@ -83,7 +83,7 @@ async function status() {
   const slot = document.getElementById("status-slot");
   try {
     const h = await api.health();
-    clear(slot).append(el("span", { text: h.queue ? `${h.queue} job${h.queue > 1 ? "s" : ""} in queue` : "idle" }));
+    clear(slot).append(el("span", { text: h.queue ? `${h.queue} job${h.queue > 1 ? "s" : ""} in queue` : "Server ready" }));
   } catch { /* leave empty */ }
 }
 
