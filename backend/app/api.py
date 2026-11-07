@@ -167,6 +167,16 @@ def create_job(request: Request, body: JobIn) -> dict:
         _dataset_row(con, body.dataset_id)
     if len(json.dumps(body.params)) > 20_000:
         raise HTTPException(400, "Parameters too large.")
+    if body.kind == "explain":
+        # The job needs to know what the saved model was trained on. Taken from the record, never from the caller.
+        with db.connect() as con:
+            m = _model_row(con, str(body.params.get("model_id") or ""))
+        if m["dataset_id"] != body.dataset_id:
+            raise HTTPException(400, "That model was trained on a different dataset.")
+        if not storage.model_path(m["id"]).exists():
+            raise HTTPException(410, "Model file expired.")
+        feats = m["features"]
+        body.params["_model"] = {"task": m["task"], "target": m["target"], "name": m["name"], "features": feats.get("features", []), "classes": feats.get("classes")}
     try:
         job_id = get_runner().submit(body.kind, body.dataset_id, body.params)
     except RuntimeError as e:

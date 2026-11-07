@@ -22,6 +22,7 @@ from sklearn.ensemble import (
 )
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.model_selection import (
+    GridSearchCV,
     RandomizedSearchCV,
     StratifiedKFold,
     KFold,
@@ -71,18 +72,53 @@ def prepare(df: pd.DataFrame, target: str, task: str, prep_options: dict | None)
     except ValueError as e:
         raise ValueError("Every other column was dropped as an ID, a constant, or empty, so there is nothing to learn from. Add columns with real information about each row.") from e
     opts = preprocess.normalize(prep_options)
-    out = {"X": X, "y": y_enc, "classes": classes, "prep": ct, "prep_info": prep_info, "balance": False, "log_target": False}
+    out = {"X": X, "y": y_enc, "classes": classes, "prep": ct, "prep_info": prep_info, "balance": False, "log_target": False, "resample": "none"}
     if task == "classification":
         share = y_enc.value_counts(normalize=True)
         out["minority_share"] = round(float(share.min()), 4)
+        out["resample"] = opts.get("resample", "none")
         want = prep_options.get("balance", "auto") if prep_options else "auto"
-        out["balance"] = bool(want is True or want == "on" or (want == "auto" and share.min() < 0.35))
+        # Resampling already evens out the classes, so class weights would count the fix twice.
+        out["balance"] = out["resample"] == "none" and bool(want is True or want == "on" or (want == "auto" and share.min() < 0.35))
     else:
         want = prep_options.get("log_target", "auto") if prep_options else "auto"
         skew = float(y_enc.skew()) if len(y_enc) > 10 else 0.0
         out["target_skew"] = round(skew, 3)
         out["log_target"] = bool(want is True or want == "on" or (want == "auto" and y_enc.min() >= 0 and abs(skew) >= 1.0))
     return out
+
+
+def make_pipe(prep, est, P: dict | None = None, middle: list | None = None):
+    """prep -> [resampler] -> [middle steps such as feature selection] -> model.
+    With resampling this is an imbalanced-learn Pipeline, which resamples only while fitting,
+    so test rows and predictions are never touched by it."""
+    steps = [("prep", prep)]
+    sampler = make_sampler((P or {}).get("resample", "none"), (P or {}).get("y"))
+    if sampler is not None:
+        steps.append(("resample", sampler))
+    steps += middle or []
+    steps.append(("model", est))
+    if sampler is not None:
+        from imblearn.pipeline import Pipeline as ImbPipeline
+        return ImbPipeline(steps)
+    return Pipeline(steps)
+
+
+def make_sampler(kind: str, y=None):
+    if kind in (None, "none"):
+        return None
+    if kind == "oversample":
+        from imblearn.over_sampling import RandomOverSampler
+        return RandomOverSampler(random_state=config.RANDOM_STATE)
+    if kind == "undersample":
+        from imblearn.under_sampling import RandomUnderSampler
+        return RandomUnderSampler(random_state=config.RANDOM_STATE)
+    if kind == "smote":
+        from imblearn.over_sampling import SMOTE
+        smallest = int(pd.Series(y).value_counts().min()) if y is not None else 6
+        # SMOTE needs k neighbours inside the rarest class of each training fold.
+        return SMOTE(random_state=config.RANDOM_STATE, k_neighbors=max(1, min(5, (smallest * 2) // 3 - 1)))
+    raise ValueError(f"Unknown resampling '{kind}'.")
 
 
 def make_model(task: str, key: str, P: dict):
@@ -148,7 +184,7 @@ def leaderboard(df, params: dict, progress: Progress, deadline: float) -> dict:
         if m.get("slow") and len(X) > config.SLOW_MODEL_ROWS and not params.get("include_slow"):
             rows.append({"key": key, "name": m["name"], "family": m["family"], "status": "skipped", "note": f"Skipped: this model scales badly above {config.SLOW_MODEL_ROWS} rows. Tick 'include slow models' to force it."})
             continue
-        pipe = Pipeline([("prep", clone(P["prep"])), ("model", make_model(task, key, P))])
+        pipe = make_pipe(clone(P["prep"]), make_model(task, key, P), P)
         t0 = time.time()
         try:
             scores = cross_val_score(pipe, X, y, cv=cv, scoring=scoring, n_jobs=1, error_score="raise")
@@ -283,7 +319,7 @@ def train(df, params: dict, progress: Progress, deadline: float) -> dict:
     test_size = float(min(max(params.get("test_size", 0.2), 0.1), 0.5))
     Xtr, Xte, ytr, yte = _split(X, y, task, test_size)
     est, name, narr = build_estimator(task, params.get("spec") or {"kind": "single", "model": params.get("model")}, P)
-    pipe = Pipeline([("prep", P["prep"]), ("model", est)])
+    pipe = make_pipe(P["prep"], est, P)
     narration = [
         {"step": "Split", "text": f"{len(Xtr)} rows are used to teach the model. {len(Xte)} rows ({int(test_size*100)}%) are hidden and used only to test it afterwards, so the score shows how it does on rows it has never seen.", "code": f"train_test_split(X, y, test_size={test_size}, random_state=42{', stratify=y' if task == 'classification' else ''})"},
     ] + narr
@@ -346,12 +382,19 @@ def tune(df, params: dict, progress: Progress, deadline: float) -> dict:
     P = prepare(df, target, task, params.get("preprocess"))
     X, y, sub = preprocess.subsample(P["X"], P["y"], config.TUNE_ROWS, task == "classification")
     n_iter = int(min(max(params.get("n_iter", 12), 2), config.TUNE_MAX_ITER))
+    search_kind = "grid" if params.get("search") == "grid" else "random"
     folds = min(config.CV_FOLDS, int(params.get("folds") or config.CV_FOLDS))
     scoring = _scoring(task, params.get("metric"))
-    pipe = Pipeline([("prep", P["prep"]), ("model", make_model(task, key, P))])
+    pipe = make_pipe(P["prep"], make_model(task, key, P), P)
     space = {("model__regressor__" + k.split("model__", 1)[1] if P.get("log_target") else k): v for k, v in m["space"].items()}
-    progress(f"Searching {n_iter} configurations of {m['name']}", 0.1)
-    search = RandomizedSearchCV(pipe, space, n_iter=n_iter, cv=_cv(task, folds), scoring=scoring, n_jobs=1, random_state=config.RANDOM_STATE, refit=False, error_score=np.nan)
+    if search_kind == "grid":
+        space = grid_from_space(space, budget=min(2 * n_iter, 40))
+        combos = int(np.prod([len(v) for v in space.values()]))
+        progress(f"Trying all {combos} grid combinations of {m['name']}", 0.1)
+        search = GridSearchCV(pipe, space, cv=_cv(task, folds), scoring=scoring, n_jobs=1, refit=False, error_score=np.nan)
+    else:
+        progress(f"Searching {n_iter} configurations of {m['name']}", 0.1)
+        search = RandomizedSearchCV(pipe, space, n_iter=n_iter, cv=_cv(task, folds), scoring=scoring, n_jobs=1, random_state=config.RANDOM_STATE, refit=False, error_score=np.nan)
     search.fit(X, y)
     res = search.cv_results_
     trials = []
@@ -359,17 +402,46 @@ def tune(df, params: dict, progress: Progress, deadline: float) -> dict:
         p = {k.replace("model__regressor__", "").replace("model__", ""): _jsonable(v) for k, v in res["params"][i].items()}
         trials.append({"params": p, "mean": _r(res["mean_test_score"][i]), "std": _r(res["std_test_score"][i]), "seconds": _r(res["mean_fit_time"][i])})
     trials.sort(key=lambda t: (t["mean"] is None, -(t["mean"] or 0)))
-    base = cross_val_score(Pipeline([("prep", clone(P["prep"])), ("model", make_model(task, key, P))]), X, y, cv=_cv(task, folds), scoring=scoring, n_jobs=1)
+    base = cross_val_score(make_pipe(clone(P["prep"]), make_model(task, key, P), P), X, y, cv=_cv(task, folds), scoring=scoring, n_jobs=1)
     best = trials[0]
+    n_tried = len(trials)
+    search_text = (f"Grid search tried every combination of a few fixed values: {', '.join(f'{k.split(chr(95)*2)[-1]} in {[_jsonable(x) for x in v]}' for k, v in space.items())}. That is {n_tried} combinations. A grid is thorough but grows fast: one more value for each setting multiplies the work."
+                   if search_kind == "grid" else
+                   f"{n_tried} random combinations of settings for {m['name']} were tried. Random search samples the space instead of trying every combination, so it covers wide ranges with few trials.")
     narration = [
-        {"step": "Search", "text": f"{n_iter} random combinations of settings for {m['name']} were tried. Each one was scored with {folds}-part cross-validation, so {n_iter * folds} models were trained in total.", "code": f"RandomizedSearchCV(pipe, space, n_iter={n_iter}, cv={folds}, scoring='{scoring}')"},
+        {"step": "Search", "text": f"{search_text} Each one was scored with {folds}-part cross-validation, so {n_tried * folds} models were trained in total.",
+         "code": f"GridSearchCV(pipe, grid, cv={folds}, scoring='{scoring}')" if search_kind == "grid" else f"RandomizedSearchCV(pipe, space, n_iter={n_iter}, cv={folds}, scoring='{scoring}')"},
         {"step": "Result", "text": f"The default settings score {base.mean():.4f}. The best settings found score {best['mean']:.4f}: {best['params']}. " + ("That is a real improvement." if (best["mean"] or 0) - base.mean() > 0.005 else "That is almost no change. The defaults were already good for this data."), "code": "search.best_params_"},
     ]
     return {
         "task": task, "target": target, "model": key, "model_name": m["name"], "scoring": scoring, "rows_used": len(X), "subsampled": sub,
+        "search": search_kind, "grid": {k.split("__")[-1]: [_jsonable(x) for x in v] for k, v in space.items()} if search_kind == "grid" else None,
         "baseline": _r(base.mean()), "trials": trials, "best_params": best["params"], "param_help": m["params"], "narration": narration,
         "preprocessing": P["prep_info"],
     }
+
+
+def grid_from_space(space: dict, budget: int) -> dict:
+    """Turn a random-search space into a small grid whose size stays within the budget."""
+    per = max(2, min(6, int(budget ** (1 / max(len(space), 1)))))
+    grid = {}
+    for k, v in space.items():
+        grid[k] = values_from_dist(v, per)
+    return grid
+
+
+def values_from_dist(v, n: int) -> list:
+    """n evenly spread values from a list or a scipy distribution (randint, uniform, loguniform)."""
+    if isinstance(v, list):
+        if len(v) <= n:
+            return list(v)
+        return [v[int(i)] for i in np.linspace(0, len(v) - 1, n)]
+    lo, hi = (float(x) for x in v.support())
+    if v.dist.name == "randint":
+        return sorted({int(round(x)) for x in np.linspace(lo, hi, n)})
+    if "loguniform" in v.dist.name or v.dist.name == "reciprocal":
+        return [float(f"{x:.4g}") for x in np.geomspace(lo, hi, n)]
+    return [float(f"{x:.4g}") for x in np.linspace(lo, hi, n)]
 
 
 def curve(df, params: dict, progress: Progress, deadline: float) -> dict:
@@ -378,7 +450,7 @@ def curve(df, params: dict, progress: Progress, deadline: float) -> dict:
     P = prepare(df, target, task, params.get("preprocess"))
     X, y, _ = preprocess.subsample(P["X"], P["y"], config.TUNE_ROWS, task == "classification")
     est, name, _ = build_estimator(task, params.get("spec") or {"kind": "single", "model": params.get("model")}, P)
-    pipe = Pipeline([("prep", P["prep"]), ("model", est)])
+    pipe = make_pipe(P["prep"], est, P)
     scoring = _scoring(task, params.get("metric"))
     progress(f"Learning curve for {name}", 0.2)
     sizes, tr, te = learning_curve(pipe, X, y, cv=_cv(task, 3), scoring=scoring, train_sizes=np.linspace(0.15, 1.0, 5), n_jobs=1, random_state=config.RANDOM_STATE, shuffle=True)
@@ -445,7 +517,7 @@ def auto(df, params: dict, progress: Progress, deadline: float) -> dict:
         progress(f"Trying {label.lower()}", 0.55 + i * 0.08)
         try:
             est, name, _ = build_estimator(task, spec, P)
-            pipe = Pipeline([("prep", clone(P["prep"])), ("model", est)])
+            pipe = make_pipe(clone(P["prep"]), est, P)
             t0 = time.time()
             scores = cross_val_score(pipe, X, y, cv=cv, scoring=scoring, n_jobs=1, error_score="raise")
             ensembles.append({"key": f"ens{i}", "name": label, "family": "ensemble", "status": "ok", "mean": round(float(scores.mean()), 5), "std": round(float(scores.std()), 5),
@@ -465,14 +537,14 @@ def auto(df, params: dict, progress: Progress, deadline: float) -> dict:
         Pq = prepare(df, target, task, prep_opts)
         Xq, yq, _ = preprocess.subsample(Pq["X"], Pq["y"], config.LEADERBOARD_ROWS, task == "classification")
         est_q, _, _ = build_estimator(task, spec, Pq)
-        return float(cross_val_score(Pipeline([("prep", Pq["prep"]), ("model", est_q)]), Xq, yq, cv=_cv(task, folds), scoring=scoring, n_jobs=1).mean())
+        return float(cross_val_score(make_pipe(Pq["prep"], est_q, Pq), Xq, yq, cv=_cv(task, folds), scoring=scoring, n_jobs=1).mean())
 
     # 1. Feature selection: drop columns the winner does not use, keep the change only if the score holds.
     if params.get("feature_select", True) and time.time() < deadline - 60 and len(P["X"].columns) >= 4:
         progress("Checking which columns the winner really needs", 0.72)
         try:
             est_w, _, _ = build_estimator(task, best_spec, P)
-            pipe_w = Pipeline([("prep", clone(P["prep"])), ("model", est_w)])
+            pipe_w = make_pipe(clone(P["prep"]), est_w, P)
             Xtr, Xte, ytr, yte = _split(X, y, task, 0.25)
             pipe_w.fit(Xtr, ytr)
             n = min(len(Xte), config.PERM_IMPORTANCE_ROWS)
@@ -516,7 +588,7 @@ def auto(df, params: dict, progress: Progress, deadline: float) -> dict:
             Pq = prepare(df, target, task, opts)
             Xq, yq, _ = preprocess.subsample(Pq["X"], Pq["y"], config.LEADERBOARD_ROWS, True)
             est_q, _, _ = build_estimator(task, best_spec, Pq)
-            pipe_q = Pipeline([("prep", Pq["prep"]), ("model", est_q)])
+            pipe_q = make_pipe(Pq["prep"], est_q, Pq)
             if hasattr(est_q, "predict_proba") or hasattr(est_q, "decision_function"):
                 proba = cross_val_predict(pipe_q, Xq, yq, cv=_cv(task, folds), method="predict_proba", n_jobs=1)[:, 1]
                 yq_arr = np.asarray(yq)

@@ -17,7 +17,7 @@ from typing import Any
 
 from . import config, db, storage
 
-KINDS = {"auto", "leaderboard", "train", "tune", "curve", "cluster", "reduce", "anomaly"}
+KINDS = {"auto", "leaderboard", "train", "tune", "curve", "cluster", "reduce", "anomaly", "validation", "explain", "select", "calibration"}
 
 
 def _child(job_id: str, kind: str, dataset_id: str, params: dict, deadline: float, conn) -> None:
@@ -36,7 +36,7 @@ def _child(job_id: str, kind: str, dataset_id: str, params: dict, deadline: floa
     try:
         import joblib
 
-        from .ml import codegen, train, unsupervised
+        from .ml import codegen, insight, train, unsupervised
 
         df = storage.load_dataset(dataset_id)
 
@@ -46,6 +46,7 @@ def _child(job_id: str, kind: str, dataset_id: str, params: dict, deadline: floa
         fn = {
             "auto": train.auto, "leaderboard": train.leaderboard, "train": train.train, "tune": train.tune, "curve": train.curve,
             "cluster": unsupervised.cluster, "reduce": unsupervised.reduce, "anomaly": unsupervised.anomaly,
+            "validation": insight.validation, "explain": insight.explain, "select": insight.select, "calibration": insight.calibration,
         }[kind]
         result = fn(df, params, progress, deadline)
         pipe = result.pop("_pipeline", None)

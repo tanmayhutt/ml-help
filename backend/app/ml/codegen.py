@@ -50,8 +50,13 @@ def _prep_block(prep_info: dict) -> str:
     enc = (f"OneHotEncoder(handle_unknown='infrequent_if_exist', min_frequency={rare}, sparse_output=False)" if rare > 1 else "OneHotEncoder(handle_unknown='ignore', sparse_output=False)") if o.get("encoder", "onehot") == "onehot" else "OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)"
     cap = o.get("outliers") == "cap"
     base = f"('impute', SimpleImputer(strategy='{o.get('num_impute', 'median')}'))" + (", ('cap', Winsorizer())" if cap else "")
-    num = "[" + base + (f", ('scale', {scaler})" if scaler else "") + "]"
-    num_log = "[" + base + ", ('log', FunctionTransformer(np.log1p))" + (f", ('scale', {scaler})" if scaler else "") + "]"
+    if o.get("bin_numeric"):
+        tail = f", ('bin', KBinsDiscretizer(n_bins={o['bin_numeric']}, encode='onehot-dense', strategy='quantile', quantile_method='averaged_inverted_cdf'))"
+    else:
+        poly = f", ('poly', PolynomialFeatures(degree={o['poly_degree']}, interaction_only={bool(o.get('poly_interaction_only'))}, include_bias=False))" if o.get("poly_degree") else ""
+        tail = poly + (f", ('scale', {scaler})" if scaler else "")
+    num = "[" + base + tail + "]"
+    num_log = "[" + base + ", ('log', FunctionTransformer(np.log1p))" + tail + "]"
     lines = [
         "# --- Preprocessing -----------------------------------------------------",
         "# Numeric columns: fill blanks" + (", cap outliers" if cap else "") + ", then scale. Text columns: fill blanks, then encode.",
@@ -104,8 +109,18 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, OneHotEncoder, OrdinalEncoder, FunctionTransformer
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, OneHotEncoder, OrdinalEncoder, FunctionTransformer, PolynomialFeatures, KBinsDiscretizer
 """
+
+
+def _same(a, b) -> bool:
+    """Equality that treats NaN == NaN, so a NaN default is not emitted as a parameter."""
+    if isinstance(a, float) and isinstance(b, float) and a != a and b != b:
+        return True
+    try:
+        return bool(a == b)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def estimator_code(task: str, spec: dict, balance: bool = False, log_target: bool = False) -> tuple[str, str]:
@@ -117,7 +132,7 @@ def estimator_code(task: str, spec: dict, balance: bool = False, log_target: boo
         est = meta["make"]()
         cls = est.__class__
         defaults = cls().get_params()
-        shown = {k: v for k, v in est.get_params().items() if k in defaults and defaults[k] != v and k != "n_jobs"}
+        shown = {k: v for k, v in est.get_params().items() if k in defaults and k != "n_jobs" and not _same(defaults[k], v)}
         for k, v in (params or {}).items():
             if k in defaults and v not in (None, ""):
                 shown[k] = v
@@ -156,27 +171,51 @@ def _estimator_inner(task: str, spec: dict, reg: dict, one) -> tuple[str, str]:
     return one("rf")
 
 
-def _head(target: str | None, drop: list[str]) -> str:
+def _head(target: str | None, drop: list[str], task: str | None = None) -> str:
     s = "df = pd.read_csv('your_dataset.csv')\n"
     if target:
         s += f"df = df[df['{target}'].notna()]\n"
         s += f"X = df.drop(columns={[target] + drop!r})\ny = df['{target}']\n"
+        if task == "classification":
+            s += ("# Classes become 0, 1, 2... in alphabetical order (some models, like XGBoost, need numbers).\n"
+                  "from sklearn.preprocessing import LabelEncoder\nlabels = LabelEncoder().fit(y.astype(str))\ny = labels.transform(y.astype(str))\nprint('classes:', list(labels.classes_))\n")
     else:
         s += f"X = df.drop(columns={drop!r}) if {drop!r} else df\n"
     return s
 
 
+SAMPLERS = {
+    "oversample": ("from imblearn.over_sampling import RandomOverSampler", "RandomOverSampler(random_state=42)"),
+    "undersample": ("from imblearn.under_sampling import RandomUnderSampler", "RandomUnderSampler(random_state=42)"),
+    "smote": ("from imblearn.over_sampling import SMOTE", "SMOTE(random_state=42)"),
+}
+
+
 def script(kind: str, params: dict, result: dict) -> str:
+    """Full script for a job, with resampling spliced into every pipeline when it was used."""
+    code = _script(kind, params, result)
+    rs = (result.get("preprocessing") or {}).get("options", {}).get("resample", "none")
+    if params.get("task") == "classification" and rs in SAMPLERS:
+        imp, ctor = SAMPLERS[rs]
+        header = (f"{imp}\nfrom imblearn.pipeline import Pipeline as ImbPipeline\n"
+                  f"# Resampling runs only while fitting, inside each training fold. Test rows are never resampled.\nsampler = {ctor}\n")
+        code = code.replace("Pipeline([('prep', preprocessor), (", "ImbPipeline([('prep', preprocessor), ('resample', sampler), (")
+        first = code.find("\n\n")
+        code = code[:first + 1] + header + code[first + 1:]
+    return code
+
+
+def _script(kind: str, params: dict, result: dict) -> str:
     task = params.get("task")
     target = params.get("target")
     prep_info = result.get("preprocessing", {})
     drop = prep_info.get("options", {}).get("drop_columns", []) or []
     balance = bool(result.get("balance"))
     log_target = bool(result.get("log_target"))
-    head = _head(target, drop)
+    head = _head(target, drop, task)
     prep = _prep_block(prep_info)
     if kind == "auto":
-        race = script("leaderboard", params, result)
+        race = _script("leaderboard", params, result)
         best = result.get("best", {})
         est, imports = estimator_code(task, best.get("spec") or {"kind": "single", "model": "rf"}, balance, log_target)
         strat = ", stratify=y" if task == "classification" else ""
@@ -275,6 +314,27 @@ pipe.fit(X_train, y_train)
 # --- Keep it ---------------------------------------------------------------
 import joblib
 joblib.dump(pipe, 'model.joblib')
+"""
+    if kind == "tune" and result.get("search") == "grid":
+        est, imports = estimator_code(task, {"kind": "single", "model": params.get("model")}, balance, log_target)
+        cv = "StratifiedKFold" if task == "classification" else "KFold"
+        pre = "model__regressor__" if log_target else "model__"
+        grid = "{\n" + ",\n".join(f"    '{pre}{k}': {v!r}" for k, v in (result.get("grid") or {}).items()) + "\n}"
+        return f"""{IMPORTS}from sklearn.model_selection import GridSearchCV, {cv}
+{imports}
+{head}
+{prep}
+
+pipe = Pipeline([('prep', preprocessor), ('model', {est})])
+
+# --- Grid: every combination of these values is tried ({len(result.get('trials', []))} in total) ----
+grid = {grid}
+
+search = GridSearchCV(pipe, grid, cv={cv}(n_splits=3, shuffle=True, random_state=42), scoring='{result.get('scoring')}', n_jobs=1)
+search.fit(X, y)
+print('best score :', search.best_score_)
+print('best params:', search.best_params_)
+# Server found: {json.dumps(result.get('best_params', {}))}
 """
     if kind == "tune":
         est, imports = estimator_code(task, {"kind": "single", "model": params.get("model")}, balance, log_target)
@@ -417,7 +477,123 @@ Z = preprocessor.fit_transform(X)
 print('flagged:', flag.sum())
 print(X[flag].assign(score=score[flag]).sort_values('score', ascending=False).head(25))
 """
+    if kind in ("validation", "select", "calibration", "explain"):
+        return _insight_script(kind, params, result, head, prep, balance, log_target)
     return "# no code generator for this job kind"
+
+
+def _insight_script(kind: str, params: dict, result: dict, head: str, prep: str, balance: bool, log_target: bool) -> str:
+    task = params.get("task") or result.get("task")
+    cv = "StratifiedKFold" if task == "classification" else "KFold"
+    if kind == "validation":
+        est, imports = estimator_code(task, {"kind": "single", "model": params.get("model")}, balance, log_target)
+        pre = "model__regressor__" if log_target else "model__"
+        values = [p["value"] for p in result.get("points", [])]
+        return f"""{IMPORTS}from sklearn.model_selection import validation_curve, {cv}
+{imports}
+{head}
+{prep}
+
+pipe = Pipeline([('prep', preprocessor), ('model', {est})])
+
+# --- Validation curve: one setting moves from simple to complex ---------------
+values = {values!r}
+train_scores, test_scores = validation_curve(
+    pipe, X, y, param_name='{pre}{result.get('param')}', param_range=values,
+    cv={cv}(n_splits=3, shuffle=True, random_state=42), scoring='{result.get('scoring')}')
+for v, tr, te in zip(values, train_scores.mean(axis=1), test_scores.mean(axis=1)):
+    print(f'{result.get('param')}={{v!s:>10}}  train {{tr:.4f}}  test {{te:.4f}}')
+# Both low = underfitting. Train high, test falling = overfitting. Pick the test peak.
+"""
+    if kind == "select":
+        est, imports = estimator_code(task, {"kind": "single", "model": result.get("model")}, balance, log_target)
+        sel = result.get("selector_code", "")
+        method = result.get("method")
+        sel_imp = {"kbest": "from sklearn.feature_selection import SelectKBest, f_classif, f_regression",
+                   "mutual_info": "from sklearn.feature_selection import SelectKBest, mutual_info_classif, mutual_info_regression",
+                   "rfe": "from sklearn.feature_selection import RFE\nfrom sklearn.linear_model import LogisticRegression, Ridge",
+                   "model": "from sklearn.feature_selection import SelectFromModel\nfrom sklearn.ensemble import RandomForestClassifier, RandomForestRegressor"}[method]
+        k = result.get("k")
+        ctor = {"kbest": f"SelectKBest({'f_classif' if task == 'classification' else 'f_regression'}, k={k})",
+                "mutual_info": f"SelectKBest({'mutual_info_classif' if task == 'classification' else 'mutual_info_regression'}, k={k})",
+                "rfe": f"RFE({'LogisticRegression(max_iter=1000)' if task == 'classification' else 'Ridge()'}, n_features_to_select={k}, step={max(1, int(result.get('n_features', 10)) // 10)})",
+                "model": f"SelectFromModel({'RandomForestClassifier' if task == 'classification' else 'RandomForestRegressor'}(random_state=42), max_features={k}, threshold=-np.inf)"}[method]
+        return f"""{IMPORTS}from sklearn.model_selection import cross_val_score, {cv}
+{sel_imp}
+{imports}
+{head}
+{prep}
+
+cv = {cv}(n_splits=3, shuffle=True, random_state=42)
+model = {est}
+
+# --- Score with every column ------------------------------------------------
+all_cols = Pipeline([('prep', preprocessor), ('model', model)])
+print('all columns :', cross_val_score(all_cols, X, y, cv=cv, scoring='{result.get('scoring')}').mean())
+
+# --- Score with the selected columns. The selector sits inside the pipeline,
+# --- so it only ever sees training rows (no leakage). ------------------------
+selected = Pipeline([('prep', preprocessor), ('select', {ctor}), ('model', model)])
+print('best {k}     :', cross_val_score(selected, X, y, cv=cv, scoring='{result.get('scoring')}').mean())
+selected.fit(X, y)
+names = selected.named_steps['prep'].get_feature_names_out()
+print('kept:', list(names[selected.named_steps['select'].get_support()]))
+# Server used: {sel}
+"""
+    if kind == "calibration":
+        spec = params.get("spec") or {"kind": "single", "model": params.get("model") or "rf"}
+        est, imports = estimator_code(task, spec, balance, log_target)
+        pos = "proba[:, 1]" if result.get("binary") else "proba.max(axis=1)"
+        hit = "(y == 1)" if result.get("binary") else "(proba.argmax(axis=1) == y)"
+        return f"""{IMPORTS}from sklearn.model_selection import cross_val_predict, StratifiedKFold
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.preprocessing import LabelEncoder
+{imports}
+{head}
+{prep}
+cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+def report(name, model):
+    pipe = Pipeline([('prep', preprocessor), ('model', model)])
+    proba = cross_val_predict(pipe, X, y, cv=cv, method='predict_proba')
+    conf, hit = {pos}, {hit}.astype(int)
+    order = np.argsort(conf)
+    ece = sum(abs(conf[b].mean() - hit[b].mean()) * len(b) for b in np.array_split(order, 10)) / len(conf)
+    print(f'{{name:18s}} ECE {{ece:.4f}}')
+    for b in np.array_split(order, 10):
+        print(f'   says {{conf[b].mean():.2f}}  right {{hit[b].mean():.2f}}')
+
+report('as trained', {est})
+report('sigmoid (Platt)', CalibratedClassifierCV({est}, method='sigmoid', cv=3))
+report('isotonic', CalibratedClassifierCV({est}, method='isotonic', cv=3))
+"""
+    feats = [p["feature"] for p in result.get("partial_dependence", [])]
+    return f"""import joblib
+import numpy as np
+import pandas as pd
+
+# Load the model you downloaded from ML Help and the same data it was trained on.
+pipe = joblib.load('model.joblib')
+df = pd.read_csv('your_dataset.csv')
+X = df.drop(columns=['{result.get('target')}'])
+X = X.sample(min(len(X), 400), random_state=0)
+
+def f(Z):  # the number we track: {result.get('tracked')}
+    return {"pipe.predict_proba(Z)[:, 1]" if "probability of" in (result.get('tracked') or '') else "pipe.predict_proba(Z).max(axis=1)" if "confidence" in (result.get('tracked') or '') else "pipe.decision_function(Z)" if "decision score" in (result.get('tracked') or '') else "pipe.predict(Z).astype(float)"}
+
+# --- Which columns the model relies on: shuffle one at a time -----------------
+base = f(X)
+for c in X.columns:
+    Z = X.copy(); Z[c] = np.random.permutation(Z[c].values)
+    print(f'{{c:30s}} {{np.mean(np.abs(f(Z) - base)):.4f}}')
+
+# --- Partial dependence: set a column to one value in every row, average ------
+for c in {feats!r}:
+    grid = np.unique(np.quantile(X[c].dropna(), np.linspace(0.05, 0.95, 12))) if X[c].dtype.kind in 'if' else X[c].value_counts().index[:8]
+    for v in grid:
+        Z = X.copy(); Z[c] = v
+        print(c, v, round(float(f(Z).mean()), 4))
+"""
 
 
 def _space_literal(task: str, key: str) -> str:

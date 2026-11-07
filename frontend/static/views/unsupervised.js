@@ -49,7 +49,7 @@ export async function render(root, [id], signal) {
     const run = button("Find groups", { kind: "primary", icon: "play", onclick: async () => {
       run.disabled = true;
       try { const job = await runJob("cluster", id, { algorithm: algo, k, eps, min_samples: ms, preprocess: S.prep }, host, signal); showResult(clusterResult(job.result)); }
-      catch {} finally { run.disabled = false; }
+      catch (e) { console.error(e); } finally { run.disabled = false; }
     } });
     return el("div", { class: "stack" }, field("Method", algoSel), params, run, host);
   }
@@ -60,7 +60,7 @@ export async function render(root, [id], signal) {
     const run = button("Draw the picture", { kind: "primary", icon: "scatter", onclick: async () => {
       run.disabled = true;
       try { const job = await runJob("reduce", id, { algorithm: algo, n_components: 2, perplexity: 30, color_by: colorBy || null, preprocess: S.prep }, host, signal); showResult(reduceResult(job.result)); }
-      catch {} finally { run.disabled = false; }
+      catch (e) { console.error(e); } finally { run.disabled = false; }
     } });
     return el("div", { class: "stack" }, el("div", { class: "grid grid-3" },
       field("Method", select([{ value: "pca", label: "PCA: fast, keeps big-picture shape" }, { value: "tsne", label: "t-SNE: slower, shows tight clusters" }], algo, (v) => (algo = v))),
@@ -73,7 +73,7 @@ export async function render(root, [id], signal) {
     const run = button("Find unusual rows", { kind: "primary", icon: "play", onclick: async () => {
       run.disabled = true;
       try { const job = await runJob("anomaly", id, { algorithm: algo, contamination: cont, preprocess: S.prep }, host, signal); showResult(anomalyResult(job.result)); }
-      catch {} finally { run.disabled = false; }
+      catch (e) { console.error(e); } finally { run.disabled = false; }
     } });
     return el("div", { class: "stack" }, el("div", { class: "grid grid-3" },
       field("Method", select([{ value: "isoforest", label: "Isolation Forest (recommended)" }, { value: "lof", label: "Local Outlier Factor" }], algo, (v) => (algo = v))),

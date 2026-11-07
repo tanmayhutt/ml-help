@@ -29,6 +29,15 @@ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 from .. import config
 
+try:  # optional: the shelf still works if these libraries are missing
+    from xgboost import XGBClassifier, XGBRegressor
+except ImportError:  # pragma: no cover
+    XGBClassifier = XGBRegressor = None
+try:
+    from lightgbm import LGBMClassifier, LGBMRegressor
+except ImportError:  # pragma: no cover
+    LGBMClassifier = LGBMRegressor = None
+
 RS = config.RANDOM_STATE
 
 
@@ -132,6 +141,25 @@ CLASSIFIERS: dict[str, dict[str, Any]] = {
     },
 }
 
+XGB_TEXT = "XGBoost: gradient boosting with built-in regularisation and fast histogram splits. The library behind many Kaggle wins on tables."
+LGBM_TEXT = "LightGBM: gradient boosting that grows each tree leaf by leaf, where the error is biggest. Very fast on large tables."
+XGB_SPACE = {"model__n_estimators": randint(100, 500), "model__learning_rate": loguniform(1e-2, 3e-1), "model__max_depth": randint(2, 8),
+             "model__subsample": uniform(0.6, 0.4), "model__colsample_bytree": uniform(0.5, 0.5), "model__reg_lambda": loguniform(1e-3, 1e1)}
+LGBM_SPACE = {"model__n_estimators": randint(100, 500), "model__learning_rate": loguniform(1e-2, 3e-1), "model__num_leaves": randint(8, 64),
+              "model__min_child_samples": randint(5, 50), "model__colsample_bytree": uniform(0.5, 0.5)}
+XGB_PARAMS = {"n_estimators": "Boosting rounds.", "learning_rate": "Shrinks each tree's contribution. Lower needs more rounds.", "max_depth": "Depth of each tree.",
+              "subsample": "Share of rows each tree sees.", "colsample_bytree": "Share of columns each tree sees.", "reg_lambda": "L2 penalty on leaf values. Higher = simpler."}
+LGBM_PARAMS = {"n_estimators": "Boosting rounds.", "learning_rate": "Shrinks each tree's contribution.", "num_leaves": "Leaves per tree. The main size control.",
+               "min_child_samples": "Rows needed in a leaf. Higher = less overfitting.", "colsample_bytree": "Share of columns each tree sees."}
+if XGBClassifier is not None:
+    CLASSIFIERS["xgb"] = {"name": "XGBoost", "family": "boosting", "cost": 2,
+                          "make": lambda: XGBClassifier(n_estimators=200, learning_rate=0.1, max_depth=4, subsample=0.9, colsample_bytree=0.9, tree_method="hist", n_jobs=_nj(), random_state=RS, verbosity=0),
+                          "space": XGB_SPACE, "explain": XGB_TEXT, "params": XGB_PARAMS}
+if LGBMClassifier is not None:
+    CLASSIFIERS["lgbm"] = {"name": "LightGBM", "family": "boosting", "cost": 2,
+                           "make": lambda: LGBMClassifier(n_estimators=200, learning_rate=0.1, num_leaves=31, n_jobs=_nj(), random_state=RS, verbose=-1),
+                           "space": LGBM_SPACE, "explain": LGBM_TEXT, "params": LGBM_PARAMS}
+
 REGRESSORS: dict[str, dict[str, Any]] = {
     "linear": {
         "name": "Linear Regression", "family": "linear", "cost": 1,
@@ -226,6 +254,15 @@ REGRESSORS: dict[str, dict[str, Any]] = {
     },
 }
 
+if XGBRegressor is not None:
+    REGRESSORS["xgb"] = {"name": "XGBoost Regressor", "family": "boosting", "cost": 2,
+                         "make": lambda: XGBRegressor(n_estimators=200, learning_rate=0.1, max_depth=4, subsample=0.9, colsample_bytree=0.9, tree_method="hist", n_jobs=_nj(), random_state=RS, verbosity=0),
+                         "space": XGB_SPACE, "explain": XGB_TEXT, "params": XGB_PARAMS}
+if LGBMRegressor is not None:
+    REGRESSORS["lgbm"] = {"name": "LightGBM Regressor", "family": "boosting", "cost": 2,
+                          "make": lambda: LGBMRegressor(n_estimators=200, learning_rate=0.1, num_leaves=31, n_jobs=_nj(), random_state=RS, verbose=-1),
+                          "space": LGBM_SPACE, "explain": LGBM_TEXT, "params": LGBM_PARAMS}
+
 FAMILY_TEXT = {
     "linear": "Linear models: a weighted sum of the features. Fast, interpretable, need scaling, cannot bend.",
     "distance": "Distance-based: predictions come from the nearest training rows. No real training step, needs scaling.",
@@ -238,7 +275,7 @@ FAMILY_TEXT = {
 }
 
 
-BALANCEABLE = {"logreg", "svm", "tree", "rf", "et", "hgb"}
+BALANCEABLE = {"logreg", "svm", "tree", "rf", "et", "hgb", "lgbm"}
 
 
 def set_balanced(est, key: str):
@@ -272,6 +309,7 @@ def public_catalog() -> dict:
         "families": FAMILY_TEXT,
         "ensembles": ENSEMBLE_TEXT,
         "unsupervised": UNSUPERVISED_TEXT,
+        "insights": INSIGHT_TEXT,
     }
 
 
@@ -280,6 +318,16 @@ ENSEMBLE_TEXT = {
     "stacking": "Several models make guesses, and one final model learns how much to trust each of them.",
     "bagging": "Many copies of one model, each trained on a random slice of the rows, then averaged. Random Forest is bagging of decision trees.",
     "boosting": "One model type trained many times in a row, each round focusing on the rows the previous rounds got wrong.",
+}
+
+INSIGHT_TEXT = {
+    "validation": "Validation curve: move one setting from simple to complex and watch the score on training rows and on new rows. Shows underfitting on one side and overfitting on the other.",
+    "explain": "Explain: partial dependence shows how the prediction moves when one column changes; what-if effects show which columns pushed one row's prediction up or down.",
+    "select": "Feature selection: keep only the columns that carry signal (F-test, mutual information, recursive elimination, or model importance) and check the score holds.",
+    "calibration": "Calibration: check whether 80% confidence really means right 80% of the time, and fix it with sigmoid or isotonic scaling.",
+    "grid_vs_random": "Grid search tries every combination of a few values; random search samples from ranges and usually finds good settings with fewer trials.",
+    "feature_engineering": "Polynomial features add squares and products so straight-line models can bend; binning cuts numbers into ranges.",
+    "resampling": "Resampling evens out rare classes on training rows only: copy rare rows (oversample), drop common rows (undersample), or create new rare rows between neighbours (SMOTE).",
 }
 
 UNSUPERVISED_TEXT = {

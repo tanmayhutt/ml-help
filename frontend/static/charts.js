@@ -78,7 +78,9 @@ export function barChart(items, opts = {}) {
 
 // Lines: series [{name, points:[[x,y]], color?, band?:[[x,lo,hi]]}]
 export function lineChart(series, opts = {}) {
-  const w = 560, h = opts.height || 300, m = { l: 56, r: 16, t: 16, b: 44 };
+  const named0 = series.filter((sr) => sr.name && !sr.thin);
+  const hasLegend = named0.length > 1 || (named0.length === 1 && series.length > 1);
+  const w = 560, h = (opts.height || 300) + (hasLegend ? 22 : 0), m = { l: 56, r: 16, t: 16 + (hasLegend ? 22 : 0), b: 44 };
   const svg = frame(w, h, opts.title);
   const xs = series.flatMap((sr) => sr.points.map((p) => p[0]));
   const ys = series.flatMap((sr) => sr.points.map((p) => p[1]));
@@ -94,11 +96,20 @@ export function lineChart(series, opts = {}) {
       const up = sr.band.map((b) => `${x(b[0])},${y(b[2])}`), lo = sr.band.slice().reverse().map((b) => `${x(b[0])},${y(b[1])}`);
       svg.append(s("polygon", { points: [...up, ...lo].join(" "), fill: c, opacity: 0.12 }));
     }
-    svg.append(s("polyline", { points: sr.points.map((p) => `${x(p[0])},${y(p[1])}`).join(" "), fill: "none", stroke: c, "stroke-width": 2 }));
-    if (sr.points.length <= 30) sr.points.forEach((p) => svg.append(s("circle", { cx: x(p[0]), cy: y(p[1]), r: 3.5, fill: c })));
+    svg.append(s("polyline", { points: sr.points.map((p) => `${x(p[0])},${y(p[1])}`).join(" "), fill: "none", stroke: c, "stroke-width": sr.thin ? 1 : 2, opacity: sr.thin ? 0.35 : 1 }));
+    if (!sr.thin && sr.points.length <= 30) sr.points.forEach((p) => svg.append(s("circle", { cx: x(p[0]), cy: y(p[1]), r: 3.5, fill: c })));
   });
-  if (series.length > 1) legend(svg, series.map((sr, i) => ({ name: sr.name, color: sr.color || PALETTE[i % PALETTE.length] })), w - m.r, m.t);
+  if (hasLegend) legendRow(svg, named0.map((sr) => ({ name: sr.name, color: sr.color || PALETTE[series.indexOf(sr) % PALETTE.length] })), m.l, 14);
   return svg;
+}
+
+function legendRow(svg, items, x0, y) {
+  let x = x0;
+  items.forEach((it) => {
+    svg.append(s("rect", { x, y: y - 8, width: 10, height: 10, rx: 2, fill: it.color }));
+    svg.append(s("text", { x: x + 14, y: y + 1, class: "tick" }, it.name));
+    x += 14 + it.name.length * 7.2 + 18;
+  });
 }
 
 function legend(svg, items, xRight, yTop) {

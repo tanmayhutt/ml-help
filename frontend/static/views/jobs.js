@@ -1,7 +1,7 @@
 import { api, cached } from "../api.js";
 import { el, card, table, timeAgo, notice, details, codeBlock, narration, fullCode } from "../ui.js";
 const ALGO = { kmeans: "K-Means", dbscan: "DBSCAN", agglomerative: "Agglomerative", gmm: "Gaussian Mixture", pca: "PCA", tsne: "t-SNE", isoforest: "Isolation Forest", lof: "Local Outlier Factor" };
-const KIND = { leaderboard: "find best model", train: "train a model", tune: "fine-tune", curve: "more data check", cluster: "find groups", reduce: "2D picture", anomaly: "unusual rows" };
+const KIND = { auto: "find best model (auto)", leaderboard: "find best model", train: "train a model", tune: "fine-tune", curve: "more data check", validation: "validation curve", explain: "explain a model", select: "pick columns", calibration: "check confidence", cluster: "find groups", reduce: "2D picture", anomaly: "unusual rows" };
 
 export async function render(root, [jobId]) {
   root.append(el("div", { class: "page-head" }, el("div", { class: "grow" }, el("h1", { text: "History" }), el("p", { text: "Everything you have run, newest first." }))));
@@ -26,7 +26,7 @@ export async function render(root, [jobId]) {
   root.append(card(null, table([
     { label: "What", get: (j) => el("a", { href: `#/jobs/${j.id}`, text: KIND[j.kind] || j.kind }) },
     { label: "File", get: (j) => dsNames[j.dataset_id] ? el("a", { href: `#/dataset/${j.dataset_id}`, text: dsNames[j.dataset_id] }) : el("span", { class: "muted", text: "deleted" }) },
-    { label: "Detail", get: (j) => { nm = (k) => names[j.params.task]?.[k] || ALGO[k] || k; return j.params.spec ? (j.params.spec.kind === "single" ? nm(j.params.spec.model) : `${j.params.spec.kind}: ${(j.params.spec.members || [j.params.spec.model]).map(nm).join(", ")}`) : nm(j.params.model || j.params.algorithm || "") || (j.params.target ? `predict ${j.params.target}` : ""); } },
+    { label: "Detail", get: (j) => { nm = (k) => names[j.params.task]?.[k] || ALGO[k] || k; return j.params.spec ? (j.params.spec.kind === "single" ? nm(j.params.spec.model) : `${j.params.spec.kind}: ${(j.params.spec.members || [j.params.spec.model]).map(nm).join(", ")}`) : nm(j.params.model || j.params.algorithm || "") || (j.params.method ? `${j.params.method}` : "") || (j.params.target ? `predict ${j.params.target}` : ""); } },
     { label: "Status", get: (j) => el("span", { class: `badge ${j.status === "done" ? "ok" : j.status === "error" ? "err" : "warn"}`, text: { done: "finished", error: "failed", running: "running", queued: "waiting" }[j.status] || j.status }) },
     { label: "When", get: (j) => timeAgo(j.created) },
   ], jobs)));

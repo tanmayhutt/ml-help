@@ -9,9 +9,11 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (
     FunctionTransformer,
+    KBinsDiscretizer,
     MinMaxScaler,
     OneHotEncoder,
     OrdinalEncoder,
+    PolynomialFeatures,
     RobustScaler,
     StandardScaler,
 )
@@ -129,7 +131,14 @@ DEFAULTS = {
     "rare_min": 5,           # categories seen fewer times than this are grouped as 'other' (0 = off)
     "ordered_auto": True,    # low/medium/high style columns get an ordinal code in the right order
     "drop_correlated": 0.95, # drop the second of two numeric columns correlated above this (0 = off)
+    "poly_degree": 0,        # 2 or 3: add squares and products of number columns (0 = off)
+    "poly_interaction_only": False,  # only products of different columns, no squares
+    "bin_numeric": 0,        # 3..10: cut each number column into this many equal-count bins (0 = off)
+    "resample": "none",      # none | oversample | undersample | smote (classification, training rows only)
 }
+
+RESAMPLERS = {"none", "oversample", "undersample", "smote"}
+POLY_MAX_COLUMNS = {2: 30, 3: 12}  # above this the number of new columns explodes
 
 
 def normalize(options: dict | None) -> dict:
@@ -153,6 +162,12 @@ def normalize(options: dict | None) -> dict:
     o["rare_min"] = int(o["rare_min"] or 0)
     o["ordered_auto"] = bool(o["ordered_auto"])
     o["drop_correlated"] = float(o["drop_correlated"] or 0)
+    o["poly_degree"] = int(o["poly_degree"] or 0) if int(o["poly_degree"] or 0) in (0, 2, 3) else 0
+    o["poly_interaction_only"] = bool(o["poly_interaction_only"])
+    o["bin_numeric"] = min(max(int(o["bin_numeric"] or 0), 3), 10) if int(o["bin_numeric"] or 0) else 0
+    o["resample"] = o["resample"] if o["resample"] in RESAMPLERS else "none"
+    if o["bin_numeric"]:
+        o["poly_degree"] = 0  # bins are already a non-linear view of each column
     return o
 
 
@@ -225,6 +240,12 @@ def _num_steps(options: dict, log: bool) -> list:
         steps.append(("cap", Winsorizer()))
     if log:
         steps.append(("log", FunctionTransformer(np.log1p, feature_names_out="one-to-one")))
+    if options.get("bin_numeric"):
+        # Bins replace scaling: every number becomes a set of 0/1 "which range is it in" columns.
+        steps.append(("bin", KBinsDiscretizer(n_bins=options["bin_numeric"], encode="onehot-dense", strategy="quantile", quantile_method="averaged_inverted_cdf")))
+        return steps
+    if options.get("poly_degree"):
+        steps.append(("poly", PolynomialFeatures(degree=options["poly_degree"], interaction_only=options.get("poly_interaction_only", False), include_bias=False)))
     scaler_cls = SCALERS[options["scaler"]]
     if scaler_cls is not None:
         steps.append(("scale", scaler_cls()))
@@ -234,6 +255,11 @@ def _num_steps(options: dict, log: bool) -> list:
 def build(X: pd.DataFrame, options: dict | None) -> tuple[ColumnTransformer, dict]:
     options = normalize(options)
     cols = split_columns(X, options)
+    notes = []
+    n_num = len(cols["numeric"]) + len(cols.get("numeric_log", []))
+    if options["poly_degree"] and n_num > POLY_MAX_COLUMNS[options["poly_degree"]]:
+        notes.append(f"Polynomial features were skipped: {n_num} number columns would create too many new columns. Degree {options['poly_degree']} allows at most {POLY_MAX_COLUMNS[options['poly_degree']]}. Drop some columns first.")
+        options = {**options, "poly_degree": 0}
     rare = int(options.get("rare_min") or 0)
     if options["encoder"] == "onehot":
         enc = OneHotEncoder(handle_unknown="infrequent_if_exist" if rare > 1 else "ignore", sparse_output=False, min_frequency=rare if rare > 1 else None)
@@ -264,7 +290,7 @@ def build(X: pd.DataFrame, options: dict | None) -> tuple[ColumnTransformer, dic
         raise ValueError("No usable feature columns remain after dropping constants, IDs and empty columns.")
     ct = ColumnTransformer(transformers, remainder="drop", verbose_feature_names_out=False)
     prep = Pipeline([("dates", DateExpander(cols["dates"])), ("columns", ct)]) if cols.get("dates") else ct
-    info = {"options": options, "columns": cols, "steps": describe(options, cols)}
+    info = {"options": options, "columns": cols, "steps": describe(options, cols), "notes": notes}
     return prep, info
 
 
@@ -290,6 +316,14 @@ def describe(options: dict, cols: dict) -> list[dict]:
         steps.append({"title": "Turn dates into numbers", "why": "A date as text means nothing to a model. Each date column becomes year, month, weekday, day of year, and days since the earliest date, so seasonality and trends can be learned.", "code": "DateExpander(columns=" + repr(cols["dates"]) + ")", "columns": cols["dates"]})
     if cols.get("numeric_log"):
         steps.append({"title": "Log-transform skewed columns", "why": "These columns have a long tail (a few very large values). Taking log(1 + x) squashes the tail so the model sees a more even spread.", "code": "np.log1p(df[cols])", "columns": cols["numeric_log"]})
+    if all_num and options.get("bin_numeric"):
+        n = options["bin_numeric"]
+        steps.append({"title": f"Cut number columns into {n} bins", "why": f"Each number is replaced by which of {n} ranges it falls in, with the same number of rows in each range. The model can then learn a different effect for low, middle and high values, even if it is a straight-line model. The cost: detail inside a range is lost.", "code": f"KBinsDiscretizer(n_bins={n}, encode='onehot-dense', strategy='quantile')", "columns": all_num})
+    if all_num and options.get("poly_degree"):
+        d = options["poly_degree"]
+        inter = options.get("poly_interaction_only")
+        steps.append({"title": f"Add {'interaction' if inter else 'polynomial'} features (degree {d})", "why": ("Adds the product of every pair of number columns" if inter else f"Adds squares{' and cubes' if d == 3 else ''} of every number column and the products of pairs") + ". A straight-line model can then learn curves and effects that depend on two columns at once. It also makes many more columns, which raises the risk of overfitting.", "code": f"PolynomialFeatures(degree={d}, interaction_only={inter}, include_bias=False)", "columns": all_num})
+    if all_num and not options.get("bin_numeric"):
         if options["scaler"] != "none":
             why = {
                 "standard": "Rescales each number column to mean 0 and spread 1. Distance-based models (KNN, SVM) and gradient models (logistic regression, neural nets) need features on the same scale. Trees do not care.",
@@ -311,6 +345,13 @@ def describe(options: dict, cols: dict) -> list[dict]:
             steps.append({"title": "Ordinal encode text columns", "why": "Each category becomes an integer. Compact, but it invents an order. Fine for tree models, risky for linear ones.", "code": "OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)", "columns": cols["categorical"]})
     if cols.get("ordered"):
         steps.append({"title": "Encode ordered categories in their natural order", "why": "; ".join(f"{c}: {' < '.join(v)}" for c, v in cols["ordered"].items()) + ". These words have an order, so they become 0, 1, 2 in that order instead of unrelated 0/1 columns. The model can then use 'more' and 'less'.", "code": "OrdinalEncoder(categories=[...])", "columns": list(cols["ordered"].keys())})
+    if options.get("resample", "none") != "none":
+        what = {
+            "oversample": ("Copy rows of the rare classes", "Rows of the smaller classes are copied at random until every class has as many rows as the biggest one.", "RandomOverSampler(random_state=42)"),
+            "undersample": ("Drop rows of the common class", "Rows of the bigger classes are removed at random until every class is as small as the rarest one. Fast, but throws data away.", "RandomUnderSampler(random_state=42)"),
+            "smote": ("Create new rare-class rows (SMOTE)", "New rows for the rare classes are made by picking a rare row and a close neighbour and placing a new point between them. Richer than plain copying.", "SMOTE(random_state=42)"),
+        }[options["resample"]]
+        steps.append({"title": what[0], "why": what[1] + " This happens only on training rows, inside each cross-validation round. Test rows are never resampled, so scores stay honest.", "code": what[2], "columns": []})
     if cols["dropped"]:
         steps.append({"title": "Drop unusable columns", "why": "; ".join(f"{d['column']}: {d['reason']}" for d in cols["dropped"]), "code": "ColumnTransformer(remainder='drop')", "columns": [d["column"] for d in cols["dropped"]]})
     steps.append({
