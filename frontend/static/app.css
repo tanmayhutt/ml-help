@@ -262,7 +262,8 @@ details[open] > summary::before { transform: rotate(45deg); }
   .layout { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 14px; border-right: none; border-bottom: 1px solid var(--line); }
   .nav { flex-direction: row; }
-  .side-section { border-top: none; padding-top: 0; flex-basis: 100%; }
+  .sidebar { max-width: 100vw; overflow-x: hidden; }
+  .side-section { border-top: none; padding-top: 0; flex-basis: 100%; min-width: 0; max-width: 100%; }
   .side-title { display: none; }
   .journey { flex-direction: row; overflow-x: auto; gap: 4px; }
   .journey li { padding: 6px 8px; white-space: nowrap; }
