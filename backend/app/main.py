@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db, storage
@@ -46,11 +47,28 @@ async def unhandled(request: Request, exc: Exception):
 
 
 STATIC = config.STATIC_DIR
+
+
+def _asset_version(folder: Path) -> str:
+    """Short hash of every static file, so each deploy gets a new asset path and no CDN or browser
+    can keep serving the previous scripts or styles."""
+    h = hashlib.sha256()
+    for f in sorted(folder.rglob("*")):
+        if f.is_file():
+            h.update(str(f.relative_to(folder)).encode())
+            h.update(f.read_bytes())
+    return h.hexdigest()[:12]
+
+
 if STATIC.exists():
+    ASSET_VERSION = _asset_version(STATIC / "static")
+    ASSET_PREFIX = f"/a/{ASSET_VERSION}"
+    INDEX_HTML = (STATIC / "index.html").read_text(encoding="utf-8").replace("/static/", ASSET_PREFIX + "/")
+    app.mount(ASSET_PREFIX, StaticFiles(directory=STATIC / "static"), name="assets")
     app.mount("/static", StaticFiles(directory=STATIC / "static"), name="static")
 
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str):
-        if path.startswith("api/") or path.startswith("static/"):
+        if path.startswith(("api/", "static/", "a/")):
             return JSONResponse({"detail": "Not found"}, status_code=404)
-        return FileResponse(STATIC / "index.html")
+        return HTMLResponse(INDEX_HTML)
