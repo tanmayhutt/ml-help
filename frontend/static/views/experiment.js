@@ -463,12 +463,17 @@ export async function render(root, [id], signal) {
   function tuneResult(r) {
     const best = r.trials[0];
     const gain = (best.mean || 0) - r.baseline;
-    const items = r.trials.filter((t) => t.mean !== null).map((t) => ({ label: Object.entries(t.params).map(([k, v]) => `${k}=${fmtv(v)}`).join(", "), value: t.mean, err: t.std }));
+    const scored = r.trials.filter((t) => t.mean !== null);
+    const items = scored.slice(0, 10).map((t) => ({ label: Object.entries(t.params).map(([k, v]) => `${k}=${fmtv(v)}`).join(", "), value: t.mean, err: t.std }));
     items.push({ label: "default settings", value: r.baseline, color: "#cbd3de" });
+    const keys = Object.keys(best.params);
+    const trialTable = table([{ label: "#", get: (t) => t.rank }, ...keys.map((k) => ({ label: k, num: true, get: (t) => fmtv(t.params[k]) })), { label: "score", num: true, get: (t) => score(t.mean) }],
+      scored.map((t, i) => ({ ...t, rank: i + 1 })));
     return [
       el("p", { class: "big-answer", text: gain > 0.005 ? `Tuning improved ${r.model_name} from ${score(r.baseline)} to ${score(best.mean)}` : `Tuning did not help much: ${score(r.baseline)} to ${score(best.mean)}. The defaults were already good.` }),
       el("div", { class: "chart-wrap" }, barChart(items, { digits: 4 })),
-      el("p", { class: "chart-note", text: "Each bar is one set of settings, best first. Grey is the untouched default." }),
+      el("p", { class: "chart-note", text: scored.length > 10 ? `The ${Math.min(10, scored.length)} best of ${scored.length} settings tried, best first. Grey is the untouched default. The full list is below.` : "Each bar is one set of settings, best first. Grey is the untouched default." }),
+      details(`Every setting tried (${scored.length})`, trialTable),
       r.search === "grid" && r.grid ? el("p", { class: "small", text: "Grid tried: " + Object.entries(r.grid).map(([k, v]) => `${k} in [${v.map(fmtv).join(", ")}]`).join("; ") + `. ${r.trials.length} combinations.` }) : null,
       el("h4", { text: "Best settings" }), codeBlock(`best_params = ${JSON.stringify(best.params, null, 2)}`),
       Object.keys(r.param_help).length ? details("What each setting means", el("dl", { class: "glossary" }, Object.entries(r.param_help).flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]))) : null,

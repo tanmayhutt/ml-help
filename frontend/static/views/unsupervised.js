@@ -16,7 +16,7 @@ export async function render(root, [id], signal) {
   const s2 = el("div"), s3 = el("div");
   const dropChips = el("div", { class: "chips" }, cols.map((c) => chip(c.name, false, (on) => { S.prep.drop_columns = on ? [...new Set([...S.prep.drop_columns, c.name])] : S.prep.drop_columns.filter((x) => x !== c.name); })));
   root.append(step(3, "Which columns should be used?", [
-    el("p", { class: "plain", text: "All columns are used unless you untick them. Leave out IDs, names, and any answer column." }),
+    el("p", { class: "plain", text: "All columns are used. Click a column to leave it out; a blue chip means it is left out. Leave out IDs, names, and any answer column." }),
     dropChips,
     details("Settings", el("div", { class: "grid grid-3" }, field("Scale numbers", select([{ value: "standard", label: "yes (recommended)" }, { value: "none", label: "no" }], "standard", (v) => (S.prep.scaler = v))),
       field("Outliers", select([{ value: "cap", label: "cap extreme values" }, { value: "none", label: "leave as is" }], S.prep.outliers, (v) => (S.prep.outliers = v))),

@@ -26,7 +26,7 @@ export async function render(root, [jobId]) {
   root.append(card(null, table([
     { label: "What", get: (j) => el("a", { href: `#/jobs/${j.id}`, text: KIND[j.kind] || j.kind }) },
     { label: "File", get: (j) => dsNames[j.dataset_id] ? el("a", { href: `#/dataset/${j.dataset_id}`, text: dsNames[j.dataset_id] }) : el("span", { class: "muted", text: "deleted" }) },
-    { label: "Detail", get: (j) => { nm = (k) => names[j.params.task]?.[k] || ALGO[k] || k; return j.params.spec ? (j.params.spec.kind === "single" ? nm(j.params.spec.model) : `${j.params.spec.kind}: ${(j.params.spec.members || [j.params.spec.model]).map(nm).join(", ")}`) : nm(j.params.model || j.params.algorithm || "") || (j.params.method ? `${j.params.method}` : "") || (j.params.target ? `predict ${j.params.target}` : ""); } },
+    { label: "Detail", get: (j) => { nm = (k) => names[j.params.task]?.[k] || ALGO[k] || k; return j.kind === "explain" ? (j.result?.model_name || "saved model") : j.params.spec ? (j.params.spec.kind === "single" ? nm(j.params.spec.model) : `${j.params.spec.kind}: ${(j.params.spec.members || [j.params.spec.model]).map(nm).join(", ")}`) : nm(j.params.model || j.params.algorithm || "") || (j.params.method ? `${j.params.method}` : "") || (j.params.target ? `predict ${j.params.target}` : ""); } },
     { label: "Status", get: (j) => el("span", { class: `badge ${j.status === "done" ? "ok" : j.status === "error" ? "err" : "warn"}`, text: { done: "finished", error: "failed", running: "running", queued: "waiting" }[j.status] || j.status }) },
     { label: "When", get: (j) => timeAgo(j.created) },
   ], jobs)));
