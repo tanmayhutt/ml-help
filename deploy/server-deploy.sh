@@ -10,11 +10,12 @@ revision=${1:-}
 git fetch origin main
 [[ "$(git rev-parse origin/main)" == "$revision" ]] || { echo 'Skipping superseded deployment'; exit 0; }
 git merge --ff-only "$revision"
+# Keep the running image under a stable tag before the build replaces ml-help-app:latest.
 previous=$(docker inspect --format '{{.Image}}' ml-help-app-1 2>/dev/null || true)
+[[ -n "$previous" ]] && docker tag "$previous" ml-help-rollback
 docker compose -p ml-help build app
 if ! docker compose -p ml-help up -d --no-build --wait --wait-timeout 120 app; then
   if [[ -n "$previous" ]]; then
-    docker tag "$previous" ml-help-rollback
     ML_HELP_IMAGE=ml-help-rollback docker compose -p ml-help up -d --no-build --wait --wait-timeout 120 app
     echo 'Restored previous image after failed health check'
   fi

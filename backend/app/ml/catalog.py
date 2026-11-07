@@ -31,11 +31,11 @@ from .. import config
 
 try:  # optional: the shelf still works if these libraries are missing
     from xgboost import XGBClassifier, XGBRegressor
-except ImportError:  # pragma: no cover
+except (ImportError, OSError):  # pragma: no cover
     XGBClassifier = XGBRegressor = None
 try:
     from lightgbm import LGBMClassifier, LGBMRegressor
-except ImportError:  # pragma: no cover
+except (ImportError, OSError):  # pragma: no cover
     LGBMClassifier = LGBMRegressor = None
 
 RS = config.RANDOM_STATE
