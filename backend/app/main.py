@@ -33,6 +33,10 @@ async def headers(request: Request, call_next):
     resp.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
     if request.url.path.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store"
+    else:
+        # Pages and static files: browsers and the CDN revalidate on every load (ETag), so a deploy
+        # never leaves users with a new page and old scripts or styles.
+        resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 
